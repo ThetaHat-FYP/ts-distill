@@ -23,3 +23,22 @@ class BasePreprocessor(ABC):
     def split_data(self, data: pd.DataFrame, train_ratio: float = 0.8):
         """Returns (train_set, test_set)."""
         pass
+
+
+class BaseDataPreprocessor(ABC):
+    
+    @abstractmethod
+    def fit(self, data):
+        pass
+    
+    @abstractmethod
+    def transform(self, data):
+        pass
+    
+    @abstractmethod
+    def inverse_transform(self, data):
+        pass
+    
+    @abstractmethod
+    def fit_transform(self, data):
+        pass
