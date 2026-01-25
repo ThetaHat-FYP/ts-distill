@@ -5,7 +5,6 @@ Implements minimal versions of base classes for testing pipeline.
 
 import torch
 import torch.nn as nn
-import pandas as pd
 from typing import List, Dict
 from copy import deepcopy
 
@@ -14,56 +13,21 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
-from src.ts_distill.data_pipeline.data_loader.base import BaseDataLoader
 from src.ts_distill.trajectory.recorder.base import BaseTrajectoryRecorder
 from src.ts_distill.evaluation.base import BaseEvaluator
 from src.ts_distill.models.base import BaseForecaster
 from src.ts_distill.trajectory.matcher.base import BaseTrajectoryMatcher
 from src.ts_distill.distillation_core.initializer.base import BaseInitializer
-
-
-# ==================== DATA LOADER ====================
-class MockDataLoader(BaseDataLoader):
-    """
-    Generates random time-series data in memory.
-    No CSV needed - perfect for testing.
-    """
-    
-    def __init__(self, n_samples=100, seq_len=10, n_features=3, batch_size=32):
-        self.n_samples = n_samples
-        self.seq_len = seq_len
-        self.n_features = n_features
-        self.batch_size = batch_size
-        self.data = None
-        
-    def load_data(self, file_path: str = None) -> pd.DataFrame:
-        """Generate random data (ignores file_path)."""
-        # Shape: (n_samples, seq_len, n_features)
-        self.data = torch.randn(self.n_samples, self.seq_len, self.n_features)
-        
-        # Return a dummy DataFrame for compatibility
-        return pd.DataFrame({"shape": [self.data.shape]})
-    
-    def view_data(self, n_rows: int = 5) -> None:
-        """Print data summary."""
-        print(f"Mock Data Shape: {self.data.shape}")
-        print(f"Data Range: [{self.data.min():.3f}, {self.data.max():.3f}]")
-        print(f"First sample:\n{self.data[0, :3, :]}")
-    
-    def get_batches(self):
-        """Return data as list of batches."""
-        batches = []
-        for i in range(0, self.n_samples, self.batch_size):
-            batch = self.data[i:i+self.batch_size]
-            batches.append(batch)
-        return batches
+from src.ts_distill.trainer.trainer.base import BaseTrainer
+from src.ts_distill.trainer.callback.base import BaseCallback
 
 
 # ==================== SIMPLE MODEL ====================
 class SimpleLSTM(BaseForecaster):
     """
-    Minimal LSTM for testing.
-    Input: (Batch, Seq, Features) -> Output: (Batch, 1)
+    Minimal LSTM for time series forecasting.
+    Input: (Batch, Seq, Features) where Seq can be variable length.
+    Output: (Batch, 1, 1) - prediction for next timestep.
     """
     
     def __init__(self, input_size=3, hidden_size=16, num_layers=1):
@@ -73,8 +37,10 @@ class SimpleLSTM(BaseForecaster):
         
     def forward(self, x):
         """
-        x: (Batch, Seq, Features)
-        Returns: (Batch, 1, 1) to match target shape
+        Args:
+            x: (Batch, Seq, Features) - past observations
+        Returns:
+            (Batch, 1, 1) - prediction for next timestep
         """
         lstm_out, _ = self.lstm(x)
         # Take last timestep
@@ -84,18 +50,24 @@ class SimpleLSTM(BaseForecaster):
 
 
 # ==================== TRAJECTORY RECORDER ====================
-class SimpleRecorder(BaseTrajectoryRecorder):
+class SimpleRecorder(BaseTrajectoryRecorder, BaseCallback):
     """
-    In-memory trajectory storage.
+    In-memory trajectory storage with callback support.
     Saves model weights to a Python list instead of disk.
     """
     
-    def __init__(self):
+    def __init__(self, record_every=2):
         self.trajectory = []
+        self.record_every = record_every
         
     def on_train_begin(self, model, **kwargs):
         """Called when training starts."""
         self.trajectory = []
+        
+    def on_epoch_end(self, model, epoch, loss, **kwargs):
+        """Called after each epoch - record checkpoints."""
+        if (epoch + 1) % self.record_every == 0:
+            self.record_checkpoint(model, epoch)
         
     def on_train_end(self, model, **kwargs):
         """Called when training ends."""
@@ -164,14 +136,14 @@ class SimpleEvaluator(BaseEvaluator):
         for epoch in range(self.n_epochs):
             optimizer.zero_grad()
             
-            # Forward pass (predict next value)
-            output = model(synthetic_data)
+            # Split into inputs (past) and targets (future)
+            # Input: all timesteps except the last one
+            # Target: only the last timestep
+            inputs = synthetic_data[:, :-1, :]
+            targets = synthetic_data[:, -1:, :]
             
-            # Create targets for windowed data
-            if synthetic_data.shape[1] == 1:
-                targets = synthetic_data[:, -1:, :]
-            else:
-                targets = synthetic_data[:, -1, :].unsqueeze(1)
+            # Predict using only past data
+            output = model(inputs)
             
             loss = criterion(output, targets)
             loss.backward()
@@ -192,12 +164,15 @@ class SimpleEvaluator(BaseEvaluator):
         
         with torch.no_grad():
             for batch in real_test_loader.get_batches():
-                output = model(batch)
-                # Match target shape for windowed data
-                if batch.shape[1] == 1:
-                    targets = batch[:, -1:, :]
-                else:
-                    targets = batch[:, -1, :].unsqueeze(1)
+                # Split into inputs (past) and targets (future)
+                # Input: all timesteps except the last one
+                # Target: only the last timestep
+                inputs = batch[:, :-1, :]
+                targets = batch[:, -1:, :]
+                
+                # Predict using only past data
+                output = model(inputs)
+                
                 loss = criterion(output, targets)
                 total_loss += loss.item()
                 n_batches += 1
@@ -233,22 +208,6 @@ class MSEMatcher(BaseTrajectoryMatcher):
 
 
 # ==================== INITIALIZER ====================
-class RandomInitializer(BaseInitializer):
-    """
-    Initialize synthetic data with random noise.
-    """
-    
-    def initialize(self, shape, real_data_reference=None):
-        """
-        shape: Tuple (n_samples, seq_len, n_features)
-        Returns: Tensor with requires_grad=True
-        """
-        # Small random values
-        data = torch.randn(shape) * 0.1
-        data.requires_grad = True
-        return data
-
-
 class RealSampleInitializer(BaseInitializer):
     """
     Initialize synthetic data by sampling from real data.
@@ -269,3 +228,78 @@ class RealSampleInitializer(BaseInitializer):
         data = real_data_reference[indices].clone()
         data.requires_grad = True
         return data
+
+
+# ==================== TRAINER ====================
+class SimpleTrainer(BaseTrainer):
+    """
+    Simple trainer with callback support.
+    """
+    
+    def train_epoch(self, dataloader) -> float:
+        """Train one epoch."""
+        self.model.train()
+        total_loss = 0.0
+        n_batches = 0
+        
+        for batch in dataloader:
+            self.optimizer.zero_grad()
+            
+            # Split into inputs (past) and targets (future)
+            # Input: all timesteps except the last one
+            # Target: only the last timestep
+            inputs = batch[:, :-1, :]
+            targets = batch[:, -1:, :]
+            
+            # Predict using only past data
+            output = self.model(inputs)
+            
+            loss = self.criterion(output, targets)
+            loss.backward()
+            self.optimizer.step()
+            
+            total_loss += loss.item()
+            n_batches += 1
+        
+        return total_loss / max(n_batches, 1)
+    
+    def fit(self, dataloader, epochs: int, callbacks=None):
+        """Main training loop with callbacks."""
+        if callbacks is None:
+            callbacks = []
+        
+        # Call on_train_begin
+        for callback in callbacks:
+            callback.on_train_begin(self.model)
+        
+        # Training loop
+        for epoch in range(epochs):
+            avg_loss = self.train_epoch(dataloader)
+            
+            # Call on_epoch_end
+            for callback in callbacks:
+                callback.on_epoch_end(self.model, epoch, avg_loss)
+        
+        # Call on_train_end
+        for callback in callbacks:
+            callback.on_train_end(self.model)
+
+
+# ==================== CALLBACK ====================
+class SimpleCallback(BaseCallback):
+    """
+    Simple callback that prints training progress.
+    """
+    
+    def on_train_begin(self, model, **kwargs):
+        """Called when training starts."""
+        print("Training started...")
+    
+    def on_epoch_end(self, model, epoch, loss, **kwargs):
+        """Called after each epoch."""
+        if (epoch + 1) % 4 == 0:
+            print(f"  Epoch {epoch+1} | Loss: {loss:.6f}")
+    
+    def on_train_end(self, model, **kwargs):
+        """Called when training ends."""
+        print("Training completed.")

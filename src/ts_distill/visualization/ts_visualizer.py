@@ -75,6 +75,79 @@ class TimeSeriesVisualizer(BaseVisualizer):
     def plot_overlay(self, real_data, synthetic_data, title=None):
         return self.plot_comparison(real_data, synthetic_data, title)
     
+    def plot_side_by_side(self, real_data, synthetic_data, n_samples=3):
+        """
+        Plot real and synthetic windows side-by-side for direct visual comparison.
+        
+        Args:
+            real_data: Tensor of shape (N_real, seq_len, features)
+            synthetic_data: Tensor of shape (N_syn, seq_len, features)
+            n_samples: Number of sample pairs to plot (default: 3)
+        
+        Returns:
+            matplotlib figure
+        """
+        real_data = self._to_numpy(real_data)
+        synthetic_data = self._to_numpy(synthetic_data)
+        
+        # Sample random indices
+        n_real = min(len(real_data), n_samples)
+        n_syn = min(len(synthetic_data), n_samples)
+        n_rows = max(n_real, n_syn)
+        
+        real_indices = np.random.choice(len(real_data), n_real, replace=False)
+        syn_indices = np.random.choice(len(synthetic_data), n_syn, replace=False)
+        
+        # Calculate global min/max from real data for consistent y-axis
+        global_min = np.min(real_data)
+        global_max = np.max(real_data)
+        y_margin = (global_max - global_min) * 0.05
+        ylim = (global_min - y_margin, global_max + y_margin)
+        
+        # Create subplots
+        self.fig, axes = plt.subplots(n_rows, 2, figsize=(14, 3 * n_rows))
+        
+        # Handle single row case
+        if n_rows == 1:
+            axes = axes.reshape(1, -1)
+        
+        # Plot real data (left column)
+        for i in range(n_rows):
+            ax_left = axes[i, 0]
+            if i < n_real:
+                ax_left.plot(real_data[real_indices[i]], color='blue', linewidth=2, alpha=0.8)
+                ax_left.set_title(f'Real Sample {i+1}', fontsize=12, fontweight='bold')
+            else:
+                ax_left.axis('off')
+            
+            ax_left.set_ylim(ylim)
+            ax_left.grid(True, alpha=0.3)
+            if i == n_rows - 1:
+                ax_left.set_xlabel('Timestep', fontsize=10)
+            ax_left.set_ylabel('Normalized Value', fontsize=10)
+        
+        # Plot synthetic data (right column)
+        for i in range(n_rows):
+            ax_right = axes[i, 1]
+            if i < n_syn:
+                ax_right.plot(synthetic_data[syn_indices[i]], color='orange', linewidth=2, alpha=0.8)
+                ax_right.set_title(f'Syn Sample {i+1}', fontsize=12, fontweight='bold')
+            else:
+                ax_right.axis('off')
+            
+            ax_right.set_ylim(ylim)
+            ax_right.grid(True, alpha=0.3)
+            if i == n_rows - 1:
+                ax_right.set_xlabel('Timestep', fontsize=10)
+            ax_right.set_ylabel('Normalized Value', fontsize=10)
+        
+        # Main title
+        self.fig.suptitle('Visual Fidelity Check: Real vs Synthetic Windows', 
+                         fontsize=16, fontweight='bold', y=0.995)
+        
+        plt.tight_layout(rect=[0, 0, 1, 0.99])
+        return self.fig
+    
     def save_plot(self, filepath):
         if self.fig is None:
             raise ValueError("No plot to save. Create a plot first.")
