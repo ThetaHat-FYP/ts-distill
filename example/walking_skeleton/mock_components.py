@@ -5,8 +5,9 @@ Implements minimal versions of base classes for testing pipeline.
 
 import torch
 import torch.nn as nn
-from typing import List, Dict
+from typing import Dict, Any, Tuple
 from copy import deepcopy
+import random
 
 # Import base classes from src
 import sys
@@ -23,30 +24,82 @@ from src.ts_distill.trainer.callback.base import BaseCallback
 
 
 # ==================== SIMPLE MODEL ====================
+class MovingAvg(nn.Module):
+    """Moving average block to highlight the trend of time series"""
+    def __init__(self, kernel_size, stride):
+        super(MovingAvg, self).__init__()
+        self.kernel_size = kernel_size
+        self.avg = nn.AvgPool1d(kernel_size=kernel_size, stride=stride, padding=0)
+
+    def forward(self, x):
+        # Padding on both ends of time series
+        front = x[:, 0:1, :].repeat(1, (self.kernel_size - 1) // 2, 1)
+        end = x[:, -1:, :].repeat(1, (self.kernel_size - 1) // 2, 1)
+        x = torch.cat([front, x, end], dim=1)
+        x = self.avg(x.permute(0, 2, 1))
+        x = x.permute(0, 2, 1)
+        return x
+
+class SeriesDecomp(nn.Module):
+    """Series decomposition block"""
+    def __init__(self, kernel_size):
+        super(SeriesDecomp, self).__init__()
+        self.moving_avg = MovingAvg(kernel_size, stride=1)
+
+    def forward(self, x):
+        moving_mean = self.moving_avg(x)
+        res = x - moving_mean
+        return res, moving_mean
+
+class StatelessDLinear(nn.Module):
+    """Decomposition-Linear Model (Stateless for MTT)"""
+    def __init__(self, seq_len, pred_len, channels=1):
+        super(StatelessDLinear, self).__init__()
+        self.seq_len = seq_len
+        self.pred_len = pred_len
+        
+        # Decomp
+        self.decomp = SeriesDecomp(kernel_size=25)
+        
+        # Linear layers for prediction
+        self.Linear_Seasonal = nn.Linear(self.seq_len, self.pred_len)
+        self.Linear_Trend = nn.Linear(self.seq_len, self.pred_len)
+
+    def forward(self, x):
+        # x: [Batch, Tin, Channels]
+        seasonal_init, trend_init = self.decomp(x)
+        
+        # Apply linear layers across the sequence dimension
+        seasonal_init = seasonal_init.permute(0, 2, 1)
+        trend_init = trend_init.permute(0, 2, 1)
+        
+        seasonal_output = self.Linear_Seasonal(seasonal_init)
+        trend_output = self.Linear_Trend(trend_init)
+        
+        x = seasonal_output + trend_output
+        return x.permute(0, 2, 1) # Output: [Batch, Tout, Channels]
+
+
 class SimpleLSTM(BaseForecaster):
     """
-    Minimal LSTM for time series forecasting.
-    Input: (Batch, Seq, Features) where Seq can be variable length.
-    Output: (Batch, 1, 1) - prediction for next timestep.
+    A custom LSTM wrapper that explicitly zeros out hidden states 
+    during every forward pass to ensure strict functional compatibility.
     """
-    
-    def __init__(self, input_size=3, hidden_size=16, num_layers=1):
+    def __init__(self, input_size, hidden_size, num_layers=1):
         super().__init__()
         self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
         self.fc = nn.Linear(hidden_size, 1)
-        
+
     def forward(self, x):
-        """
-        Args:
-            x: (Batch, Seq, Features) - past observations
-        Returns:
-            (Batch, 1, 1) - prediction for next timestep
-        """
-        lstm_out, _ = self.lstm(x)
-        # Take last timestep
-        last_output = lstm_out[:, -1, :]
-        prediction = self.fc(last_output)
-        return prediction.unsqueeze(1)  # (Batch, 1) -> (Batch, 1, 1)
+        # Explicitly initialize hidden states to zero on the correct device
+        # This breaks the graph connection to previous steps!
+        h0 = torch.zeros(self.lstm.num_layers, x.size(0), self.lstm.hidden_size, device=x.device)
+        c0 = torch.zeros(self.lstm.num_layers, x.size(0), self.lstm.hidden_size, device=x.device)
+        
+        out, _ = self.lstm(x, (h0, c0))
+        # Take the output of the last time step
+        out = self.fc(out[:, -1, :])
+        return out.unsqueeze(1) # [batch, 1, 1] to match target slicing
 
 
 # ==================== TRAJECTORY RECORDER ====================
@@ -56,18 +109,20 @@ class SimpleRecorder(BaseTrajectoryRecorder, BaseCallback):
     Saves model weights to a Python list instead of disk.
     """
     
-    def __init__(self, record_every=2):
+    def __init__(self, record_every=1):
         self.trajectory = []
         self.record_every = record_every
         
     def on_train_begin(self, model, **kwargs):
         """Called when training starts."""
         self.trajectory = []
+        # Record the exact initialization state
+        self.record_checkpoint(model, 0)
         
     def on_epoch_end(self, model, epoch, loss, **kwargs):
         """Called after each epoch - record checkpoints."""
         if (epoch + 1) % self.record_every == 0:
-            self.record_checkpoint(model, epoch)
+            self.record_checkpoint(model, epoch + 1)
         
     def on_train_end(self, model, **kwargs):
         """Called when training ends."""
@@ -96,11 +151,31 @@ class SimpleRecorder(BaseTrajectoryRecorder, BaseCallback):
         """Return the current trajectory list."""
         return self.trajectory
     
+    def sample_checkpoint_pair(self, step_gap: int = 10) -> Tuple[Dict, Dict]:
+        """Sample a pair of checkpoints (θ_t, θ_{t+k}) for MTT.
+        
+        Args:
+            step_gap: The number of recorded steps between the start and target checkpoint.
+            
+        Returns:
+            Tuple of (start_checkpoint, end_checkpoint)
+        """
+        if len(self.trajectory) < 2:
+            raise ValueError("Need at least 2 checkpoints for MTT trajectory matching!")
+            
+        # If the gap is larger than our trajectory, cap it safely
+        actual_gap = min(step_gap, len(self.trajectory) - 1)
+        
+        # Sample start index, ensuring we have room for the gap
+        start_idx = random.randint(0, len(self.trajectory) - actual_gap - 1)
+        end_idx = start_idx + actual_gap
+        
+        return self.trajectory[start_idx], self.trajectory[end_idx]
+    
     def sample_checkpoint(self):
         """Randomly sample one checkpoint from trajectory."""
         if not self.trajectory:
             raise ValueError("No trajectory recorded yet!")
-        import random
         return random.choice(self.trajectory)
 
 
@@ -127,8 +202,12 @@ class SimpleEvaluator(BaseEvaluator):
         """
         if model is None:
             model = self.model_factory()
-        
+            
+        # Ensure model is on the correct device
+        device = synthetic_data.device
+        model = model.to(device)
         model.train()
+        
         optimizer = torch.optim.Adam(model.parameters(), lr=self.lr)
         criterion = nn.MSELoss()
         
@@ -137,10 +216,11 @@ class SimpleEvaluator(BaseEvaluator):
             optimizer.zero_grad()
             
             # Split into inputs (past) and targets (future)
-            # Input: all timesteps except the last one
-            # Target: only the last timestep
-            inputs = synthetic_data[:, :-1, :]
-            targets = synthetic_data[:, -1:, :]
+            # Input: First half (Tin = 24)
+            # Target: Second half (Tout = 24)
+            seq_len = synthetic_data.shape[1] // 2
+            inputs = synthetic_data[:, :seq_len, :]
+            targets = synthetic_data[:, seq_len:, :]
             
             # Predict using only past data
             output = model(inputs)
@@ -151,33 +231,28 @@ class SimpleEvaluator(BaseEvaluator):
             
         return model
     
-    def test_on_real(self, model, real_test_loader):
+    def test_on_real(self, model, real_test_data):
         """
         Evaluate model on real data.
-        real_test_loader: MockDataLoader with test data
+        real_test_data: Tensor of shape (N, Seq, Features) representing properly windowed test data
         """
+        device = real_test_data.device
+        model = model.to(device)
         model.eval()
         criterion = nn.MSELoss()
         
-        total_loss = 0.0
-        n_batches = 0
-        
         with torch.no_grad():
-            for batch in real_test_loader.get_batches():
-                # Split into inputs (past) and targets (future)
-                # Input: all timesteps except the last one
-                # Target: only the last timestep
-                inputs = batch[:, :-1, :]
-                targets = batch[:, -1:, :]
-                
-                # Predict using only past data
-                output = model(inputs)
-                
-                loss = criterion(output, targets)
-                total_loss += loss.item()
-                n_batches += 1
-        
-        avg_loss = total_loss / max(n_batches, 1)
+            # Split into inputs (past) and targets (future)
+            seq_len = real_test_data.shape[1] // 2
+            inputs = real_test_data[:, :seq_len, :]
+            targets = real_test_data[:, seq_len:, :]
+            
+            # Predict using only past data
+            output = model(inputs)
+            
+            loss = criterion(output, targets)
+            
+        avg_loss = loss.item()
         
         return {
             'MSE': avg_loss,
@@ -248,8 +323,8 @@ class SimpleTrainer(BaseTrainer):
             # Split into inputs (past) and targets (future)
             # Input: all timesteps except the last one
             # Target: only the last timestep
-            inputs = batch[:, :-1, :]
-            targets = batch[:, -1:, :]
+            inputs = batch[:, :24, :]
+            targets = batch[:, 24:, :]
             
             # Predict using only past data
             output = self.model(inputs)

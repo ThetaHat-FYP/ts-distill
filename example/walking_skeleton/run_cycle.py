@@ -12,7 +12,7 @@ sys.path.append(str(Path(__file__).parent.parent.parent))
 from example.walking_skeleton.etth1_loader import ETTh1DataLoader
 from example.walking_skeleton.mock_components import (
     SimpleLSTM, SimpleRecorder, SimpleEvaluator, 
-    SimpleTrainer, SimpleCallback, MSEMatcher, RealSampleInitializer
+    SimpleTrainer, SimpleCallback, MSEMatcher, RealSampleInitializer, StatelessDLinear
 )
 from example.walking_skeleton.mtt_distiller import MTTDistiller
 from src.ts_distill.data_pipeline.data_windowing.fixed_windowing import FixedWindowing
@@ -23,28 +23,33 @@ from src.ts_distill.data_pipeline.data_preprocessor.normalization import Standar
 # Configuration
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
+
 CONFIG = {
     # Data
     'csv_path': 'example/ETTh1.csv',
-    'n_train_samples': 1000,
-    'n_test_samples': 200,
+    'n_train_samples': 15000,
+    'n_test_samples': 3000,
     'test_start_idx': 5000,
     'target_column': 'OT',
     
     # Windowing
-    'window_size': 96,
+    'window_size': 48,
     'stride': 1,
     
     # Expert Training
-    'expert_epochs': 50,
-    'expert_lr': 0.001,
+    'expert_epochs': 80,
+    'expert_lr': 0.0005, 
+    'expert_momentum': 0.9,
     
     # Distillation
-    'n_distill_steps': 40,
+    'n_distill_steps': 50,
     'compression_ratio': 0.1,
     'synthetic_lr': 0.1,
-    'student_lr': 0.01,
-    'student_steps': 10,
+    'student_lr': 0.0003,
+    'student_steps': 5,
+    'trajectory_gap': 5,
+    'n_synthetic': 10, 
     
     # Evaluation
     'eval_epochs': 50,
@@ -53,6 +58,11 @@ CONFIG = {
     # Model
     'hidden_size': 16,
     'num_layers': 1,
+
+    # Model Setup
+    'in_features': 1,      # Assuming univariate for ETTh1 target column
+    'seq_len': 24,         # Tin
+    'pred_len': 24         # Tout
 }
 
 
@@ -61,12 +71,12 @@ CONFIG = {
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+# Update your factory function
 def create_model():
-    """Create LSTM model instance."""
-    return SimpleLSTM(
-        input_size=1, 
-        hidden_size=CONFIG['hidden_size'], 
-        num_layers=CONFIG['num_layers']
+    return StatelessDLinear(
+        seq_len=CONFIG['seq_len'], 
+        pred_len=CONFIG['pred_len'],
+        channels=CONFIG['in_features']
     )
 
 
@@ -85,6 +95,7 @@ def main():
     print("=" * 70)
     
     torch.manual_seed(42)
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'  
     
     # Load data
     print("\n1. Loading data...")
@@ -133,8 +144,12 @@ def main():
     # Train expert
     print("4. Training expert model...")
     expert_model = create_model()
-    recorder = SimpleRecorder()
-    optimizer = torch.optim.Adam(expert_model.parameters(), lr=CONFIG['expert_lr'])
+    recorder = SimpleRecorder(record_every=1)
+    optimizer = torch.optim.SGD(
+        expert_model.parameters(), 
+        lr=CONFIG['expert_lr'], 
+        momentum=CONFIG['expert_momentum']
+    )
     criterion = torch.nn.MSELoss()
     
     trainer = SimpleTrainer(
@@ -178,22 +193,26 @@ def main():
     )
     
     real_model = evaluator.train_on_synthetic(train_data)
-    real_metrics = evaluator.test_on_real(real_model, test_loader)
+    # CHANGE: test_data.to(torch.device) -> test_data.to(device)
+    real_metrics = evaluator.test_on_real(real_model, test_data.to(device))
     
     synthetic_model = evaluator.train_on_synthetic(synthetic_data)
-    synthetic_metrics = evaluator.test_on_real(synthetic_model, test_loader)
+    # CHANGE: test_data.to(torch.device) -> test_data.to(device)
+    synthetic_metrics = evaluator.test_on_real(synthetic_model, test_data.to(device))
     
     performance_ratio = (synthetic_metrics['MSE'] / real_metrics['MSE']) * 100
+    performance_retention = (real_metrics['MSE'] / synthetic_metrics['MSE']) * 100
     
     print("\nResults:")
     print(f"   Real MSE:      {real_metrics['MSE']:.6f}")
     print(f"   Synthetic MSE: {synthetic_metrics['MSE']:.6f}")
-    print(f"   Performance:   {performance_ratio:.1f}%")
+    print(f"   Error Ratio:   {(synthetic_metrics['MSE'] / real_metrics['MSE']):.2f}x original error")
+    print(f"   Perf Retained: {performance_retention:.1f}%")
     print(f"   Compression:   {CONFIG['compression_ratio']*100:.1f}%")
-    
     print("\n" + "=" * 70)
     print("Pipeline complete.\n")
-    
+
+
     return {
         'train_data': train_data,
         'synthetic_data': synthetic_data,
