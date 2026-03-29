@@ -3,18 +3,21 @@ MTT Walking Skeleton - End-to-End Pipeline
 Time series data distillation using Matching Training Trajectories.
 """
 
+import os
 import torch
+import numpy as np
+import pandas as pd
 import sys
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
-from example.walking_skeleton.etth1_loader import ETTh1DataLoader
 from example.walking_skeleton.mock_components import (
     SimpleLSTM, SimpleRecorder, SimpleEvaluator, 
     SimpleTrainer, SimpleCallback, MSEMatcher, RealSampleInitializer, StatelessDLinear
 )
 from example.walking_skeleton.mtt_distiller import MTTDistiller
+from src.ts_distill.data_pipeline.data_loader import CSVDataLoader
 from src.ts_distill.data_pipeline.data_windowing.fixed_windowing import FixedWindowing
 from src.ts_distill.data_pipeline.data_preprocessor.normalization import StandardNormalization
 
@@ -27,11 +30,17 @@ from src.ts_distill.data_pipeline.data_preprocessor.normalization import Standar
 
 CONFIG = {
     # Data
-    'csv_path': 'example/ETTh1.csv',
+    # Override without editing this file:
+    #   PowerShell: $env:TS_DISTILL_CSV_PATH = "C:\\Users\\piyum\\Downloads\\my_file.csv"
+    #   PowerShell: $env:TS_DISTILL_TARGET_COLUMN = "OT"
+    #   PowerShell: $env:TS_DISTILL_CSV_ENCODING = "cp1252"  # optional
+    #   Then run:   python example/walking_skeleton/run_cycle.py
+    'csv_path': os.getenv('TS_DISTILL_CSV_PATH', 'example/ETTh1.csv'),
+    'csv_encoding': os.getenv('TS_DISTILL_CSV_ENCODING', ''),
     'n_train_samples': 15000,
     'n_test_samples': 3000,
     'test_start_idx': 5000,
-    'target_column': 'OT',
+    'target_column': os.getenv('TS_DISTILL_TARGET_COLUMN', 'OT'),
     
     # Windowing
     'window_size': 48,
@@ -88,6 +97,20 @@ class SingleBatchLoader:
         yield self.data
 
 
+def _make_single_sequence(values: np.ndarray, start_idx: int, n_samples: int) -> torch.Tensor:
+    """Create a single univariate sequence tensor of shape (1, T, 1)."""
+    if start_idx < 0:
+        raise ValueError(f"start_idx must be >= 0, got {start_idx}")
+    if n_samples <= 0:
+        raise ValueError(f"n_samples must be > 0, got {n_samples}")
+    if start_idx >= len(values):
+        raise ValueError(f"start_idx {start_idx} is >= dataset length {len(values)}")
+
+    end_idx = min(start_idx + n_samples, len(values))
+    sequence = np.asarray(values[start_idx:end_idx], dtype=np.float32).copy()
+    return torch.from_numpy(sequence).unsqueeze(0).unsqueeze(-1)
+
+
 def main():
     """Execute MTT distillation pipeline."""
     
@@ -99,30 +122,32 @@ def main():
     
     # Load data
     print("\n1. Loading data...")
-    train_loader = ETTh1DataLoader(
-        CONFIG['csv_path'], 
-        n_samples=CONFIG['n_train_samples'],
-        seq_len=1, 
-        batch_size=CONFIG['n_train_samples'],
-        target_column=CONFIG['target_column'],
-        start_idx=0,
-        single_sequence=True
-    )
-    train_loader.load_data()
-    
-    test_loader = ETTh1DataLoader(
-        CONFIG['csv_path'],
-        n_samples=CONFIG['n_test_samples'],
-        seq_len=1,
-        batch_size=CONFIG['n_test_samples'],
-        target_column=CONFIG['target_column'],
-        start_idx=CONFIG['test_start_idx'],
-        single_sequence=True
-    )
-    test_loader.load_data()
-    
-    train_data = train_loader.data
-    test_data = test_loader.data
+    read_csv_kwargs = {}
+    if CONFIG.get('csv_encoding'):
+        read_csv_kwargs['encoding'] = CONFIG['csv_encoding']
+
+    csv_loader = CSVDataLoader(read_csv_kwargs=read_csv_kwargs)
+    df = csv_loader.load_data(CONFIG['csv_path'])
+    csv_loader.view_data(n_rows=5)
+
+    target_column = CONFIG['target_column']
+    if target_column not in df.columns:
+        raise ValueError(
+            f"target_column '{target_column}' not found in CSV. "
+            f"Available columns: {list(df.columns)}"
+        )
+
+    series = df[target_column]
+    numeric = pd.to_numeric(series, errors="coerce")
+    dropped = int(numeric.isna().sum())
+    if dropped:
+        print(
+            f"   Note: dropped {dropped} non-numeric/blank rows from '{target_column}' before training."
+        )
+
+    values = numeric.dropna().to_numpy(dtype=np.float32, copy=True)
+    train_data = _make_single_sequence(values, start_idx=0, n_samples=CONFIG['n_train_samples'])
+    test_data = _make_single_sequence(values, start_idx=CONFIG['test_start_idx'], n_samples=CONFIG['n_test_samples'])
     print(f"   Train: {train_data.shape}, Test: {test_data.shape}")
     
     # Normalize
