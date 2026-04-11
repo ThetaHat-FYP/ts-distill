@@ -151,12 +151,12 @@ class MTTDistiller(BaseDistiller):
                 loss,
                 param_list,
                 create_graph=True,
-                allow_unused=False
+                allow_unused=True
             )
             
             # SGD update (functional, not in-place)
             params = {
-                name: param - self.student_lr * grad
+                name: param - self.student_lr * (grad if grad is not None else torch.zeros_like(param))
                 for (name, param), grad in zip(params.items(), grads)
             }
         

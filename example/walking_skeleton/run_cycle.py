@@ -7,14 +7,21 @@ import torch
 import sys
 from pathlib import Path
 
+from ts_distill.models.dlinear import DLinear
+from ts_distill.models.lstm import LSTM
+from ts_distill.models.mlp import MLP
+from ts_distill.models.cnn import CNN
+
+
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from example.walking_skeleton.etth1_loader import ETTh1DataLoader
-from example.walking_skeleton.mock_components import (
-    SimpleLSTM, SimpleRecorder, SimpleEvaluator, 
-    SimpleTrainer, SimpleCallback, MSEMatcher, RealSampleInitializer, StatelessDLinear
+from example.walking_skeleton.mock_components import ( SimpleRecorder, SimpleEvaluator, 
+    SimpleTrainer, SimpleCallback, MSEMatcher, RealSampleInitializer
 )
-from example.walking_skeleton.mtt_distiller import MTTDistiller
+from src.ts_distill.distillation_core.distillation_algorithm.condtsf import CondTSFDistiller
+from src.ts_distill.distillation_core.distillation_algorithm.frepo import FRePODistiller
+# from src.ts_distill.distillation_core.distillation_algorithm.mtt import MTTDistiller
 from src.ts_distill.data_pipeline.data_windowing.fixed_windowing import FixedWindowing
 from src.ts_distill.data_pipeline.data_preprocessor.normalization import StandardNormalization
 
@@ -44,12 +51,17 @@ CONFIG = {
     
     # Distillation
     'n_distill_steps': 50,
-    'compression_ratio': 0.1,
+    'compression_ratio': 0.0333,
     'synthetic_lr': 0.1,
     'student_lr': 0.0003,
     'student_steps': 5,
     'trajectory_gap': 5,
     'n_synthetic': 10, 
+    'cond_gap': 3,
+    'beta': 0.01,
+    'frepo_online_lr': 0.001,
+    'frepo_online_updates': 10,
+    'frepo_ridge_lambda': 0.001,
     
     # Evaluation
     'eval_epochs': 50,
@@ -73,11 +85,24 @@ CONFIG = {
 
 # Update your factory function
 def create_model():
-    return StatelessDLinear(
+    return DLinear(
         seq_len=CONFIG['seq_len'], 
         pred_len=CONFIG['pred_len'],
-        channels=CONFIG['in_features']
+        channels=CONFIG['in_features'],
+        individual=False
     )
+
+    # return MLP(seq_len=CONFIG['seq_len'], pred_len=CONFIG['pred_len'])
+
+    # return LSTM(
+    #     input_dim=CONFIG['in_features'],
+    #     embed_dim=CONFIG['seq_len'],
+    #     hidden_dim=CONFIG['hidden_size'],
+    #     num_layer=CONFIG['num_layers'],
+    #     horizon=CONFIG['pred_len']
+    # )
+
+    # return CNN(channel=CONFIG['in_features'])
 
 
 class SingleBatchLoader:
@@ -166,14 +191,42 @@ def main():
     
     # Distill synthetic data
     print("5. Distilling synthetic data...")
-    distiller = MTTDistiller(
+    # distiller = MTTDistiller(
+    #     initializer=RealSampleInitializer(),
+    #     matcher=MSEMatcher(),
+    #     model_factory=create_model,
+    #     expert_recorder=recorder,
+    #     expert_epochs=CONFIG['trajectory_gap'],
+    #     synthetic_lr=CONFIG['synthetic_lr'],
+    #     student_lr=CONFIG['student_lr'],
+    #     student_steps=CONFIG['student_steps']
+    # )
+
+    # distiller = CondTSFDistiller(
+    #     initializer=RealSampleInitializer(),
+    #     matcher=MSEMatcher(),
+    #     model_factory=create_model,
+    #     teacher_state_dict={k: v.detach().cpu().clone() for k, v in expert_model.state_dict().items()},
+    #     expert_epochs=CONFIG['trajectory_gap'],
+    #     synthetic_lr=CONFIG['synthetic_lr'],
+    #     student_lr=CONFIG['student_lr'],
+    #     student_steps=CONFIG['student_steps'],
+    #     cond_gap=CONFIG['cond_gap'],
+    #     beta=CONFIG['beta'],
+    #     device=device
+    # )
+
+    distiller = FRePODistiller(
         initializer=RealSampleInitializer(),
         matcher=MSEMatcher(),
         model_factory=create_model,
-        expert_recorder=recorder,
         synthetic_lr=CONFIG['synthetic_lr'],
-        student_lr=CONFIG['student_lr'],
-        student_steps=CONFIG['student_steps']
+        online_lr=CONFIG['frepo_online_lr'],
+        online_updates=CONFIG['frepo_online_updates'],
+        syn_batch_size=min(128, max(1, int(train_data.shape[0] * CONFIG['compression_ratio']))),
+        real_batch_size=256,
+        ridge_lambda=CONFIG['frepo_ridge_lambda'],
+        device=device,
     )
     
     n_synthetic = max(1, int(train_data.shape[0] * CONFIG['compression_ratio']))
