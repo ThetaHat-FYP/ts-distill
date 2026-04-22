@@ -17,7 +17,8 @@ from example.walking_skeleton.mock_components import (
 from example.walking_skeleton.mtt_distiller import MTTDistiller
 from src.ts_distill.data_pipeline.data_loader import CSVDataLoader
 from src.ts_distill.data_pipeline.data_loader.tensor_builder import make_sequence_tensor_from_dataframe
-from src.ts_distill.data_pipeline.data_windowing.fixed_windowing import FixedWindowing
+# from src.ts_distill.data_pipeline.data_windowing.fixed_windowing import FixedWindowing
+from src.ts_distill.data_pipeline.data_windowing.adaptive_windowing_adwin import ADWINWindowing
 from src.ts_distill.data_pipeline.data_preprocessor.normalization import StandardNormalization
 
 
@@ -139,10 +140,22 @@ def main():
     
     # Apply windowing
     print("3. Applying windowing...")
-    windowing = FixedWindowing(
+
+    # Option A: Fixed windowing (default)
+    # windowing = FixedWindowing(
+    #     window_size=CONFIG['window_size'],
+    #     stride=CONFIG['stride']
+    # )
+
+    # Option B: Adaptive windowing (ADWIN / River)
+    windowing = ADWINWindowing(
         window_size=CONFIG['window_size'],
-        stride=CONFIG['stride']
+        stride=CONFIG['stride'],
+        delta=float(os.getenv('TS_DISTILL_ADWIN_DELTA', '0.002')),
+        warmup=int(os.getenv('TS_DISTILL_ADWIN_WARMUP', '0')),
+        reduction=os.getenv('TS_DISTILL_ADWIN_REDUCTION', 'mean'),
     )
+
     train_data, _ = windowing.create_windows(train_data)
     test_data, _ = windowing.create_windows(test_data)
     print(f"   Windows: {train_data.shape}")
