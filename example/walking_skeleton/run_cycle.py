@@ -17,7 +17,7 @@ from example.walking_skeleton.mock_components import (
 from example.walking_skeleton.mtt_distiller import MTTDistiller
 from src.ts_distill.data_pipeline.data_loader import CSVDataLoader
 from src.ts_distill.data_pipeline.data_loader.tensor_builder import make_sequence_tensor_from_dataframe
-# from src.ts_distill.data_pipeline.data_windowing.fixed_windowing import FixedWindowing
+from src.ts_distill.data_pipeline.data_windowing.fixed_windowing import FixedWindowing
 from src.ts_distill.data_pipeline.data_windowing.adaptive_windowing_adwin import ADWINWindowing
 from src.ts_distill.data_pipeline.data_preprocessor.normalization import StandardNormalization
 
@@ -36,7 +36,7 @@ CONFIG = {
     #   PowerShell: $env:TS_DISTILL_CSV_PATH = "C:\\Users\\piyum\\Downloads\\my_file.csv"
     #   PowerShell: $env:TS_DISTILL_CSV_ENCODING = "cp1252"  # optional
     #   Then run:   python example/walking_skeleton/run_cycle.py
-    'csv_path': os.getenv('TS_DISTILL_CSV_PATH', "C:/Users/piyum/Downloads/weather.csv"),
+    'csv_path': os.getenv('TS_DISTILL_CSV_PATH', "C:/Users/piyum/Downloads/archive/cleaned_carrot_prices_for_ML.csv"),
     'csv_encoding': os.getenv('TS_DISTILL_CSV_ENCODING', ''),
     'n_train_samples': 15000,
     'n_test_samples': 3000,
