@@ -5,8 +5,6 @@ Time series data distillation using Matching Training Trajectories.
 
 import os
 import torch
-import numpy as np
-import pandas as pd
 import sys
 from pathlib import Path
 
@@ -18,6 +16,7 @@ from example.walking_skeleton.mock_components import (
 )
 from example.walking_skeleton.mtt_distiller import MTTDistiller
 from src.ts_distill.data_pipeline.data_loader import CSVDataLoader
+from src.ts_distill.data_pipeline.data_loader.tensor_builder import make_sequence_tensor_from_dataframe
 from src.ts_distill.data_pipeline.data_windowing.fixed_windowing import FixedWindowing
 from src.ts_distill.data_pipeline.data_preprocessor.normalization import StandardNormalization
 
@@ -28,19 +27,19 @@ from src.ts_distill.data_pipeline.data_preprocessor.normalization import Standar
 
 
 
+DEFAULT_CSV_PATH = str(Path(__file__).resolve().parents[1] / "ETTh1.csv")
+
 CONFIG = {
     # Data
     # Override without editing this file:
     #   PowerShell: $env:TS_DISTILL_CSV_PATH = "C:\\Users\\piyum\\Downloads\\my_file.csv"
-    #   PowerShell: $env:TS_DISTILL_TARGET_COLUMN = "OT"
     #   PowerShell: $env:TS_DISTILL_CSV_ENCODING = "cp1252"  # optional
     #   Then run:   python example/walking_skeleton/run_cycle.py
-    'csv_path': os.getenv('TS_DISTILL_CSV_PATH', 'example/ETTh1.csv'),
+    'csv_path': os.getenv('TS_DISTILL_CSV_PATH', "C:/Users/piyum/Downloads/archive/cleaned_carrot_prices_for_ML.csv"),
     'csv_encoding': os.getenv('TS_DISTILL_CSV_ENCODING', ''),
     'n_train_samples': 15000,
     'n_test_samples': 3000,
     'test_start_idx': 5000,
-    'target_column': os.getenv('TS_DISTILL_TARGET_COLUMN', 'OT'),
     
     # Windowing
     'window_size': 48,
@@ -69,7 +68,7 @@ CONFIG = {
     'num_layers': 1,
 
     # Model Setup
-    'in_features': 1,      # Assuming univariate for ETTh1 target column
+    'in_features': 1,      # Updated dynamically after loading dataset
     'seq_len': 24,         # Tin
     'pred_len': 24         # Tout
 }
@@ -97,20 +96,6 @@ class SingleBatchLoader:
         yield self.data
 
 
-def _make_single_sequence(values: np.ndarray, start_idx: int, n_samples: int) -> torch.Tensor:
-    """Create a single univariate sequence tensor of shape (1, T, 1)."""
-    if start_idx < 0:
-        raise ValueError(f"start_idx must be >= 0, got {start_idx}")
-    if n_samples <= 0:
-        raise ValueError(f"n_samples must be > 0, got {n_samples}")
-    if start_idx >= len(values):
-        raise ValueError(f"start_idx {start_idx} is >= dataset length {len(values)}")
-
-    end_idx = min(start_idx + n_samples, len(values))
-    sequence = np.asarray(values[start_idx:end_idx], dtype=np.float32).copy()
-    return torch.from_numpy(sequence).unsqueeze(0).unsqueeze(-1)
-
-
 def main():
     """Execute MTT distillation pipeline."""
     
@@ -130,24 +115,20 @@ def main():
     df = csv_loader.load_data(CONFIG['csv_path'])
     csv_loader.view_data(n_rows=5)
 
-    target_column = CONFIG['target_column']
-    if target_column not in df.columns:
-        raise ValueError(
-            f"target_column '{target_column}' not found in CSV. "
-            f"Available columns: {list(df.columns)}"
-        )
+    # Build multivariate sequences using ALL columns.
+    train_data = make_sequence_tensor_from_dataframe(
+        df,
+        start_idx=0,
+        n_rows=CONFIG['n_train_samples'],
+    )
+    test_data = make_sequence_tensor_from_dataframe(
+        df,
+        start_idx=CONFIG['test_start_idx'],
+        n_rows=CONFIG['n_test_samples'],
+    )
 
-    series = df[target_column]
-    numeric = pd.to_numeric(series, errors="coerce")
-    dropped = int(numeric.isna().sum())
-    if dropped:
-        print(
-            f"   Note: dropped {dropped} non-numeric/blank rows from '{target_column}' before training."
-        )
-
-    values = numeric.dropna().to_numpy(dtype=np.float32, copy=True)
-    train_data = _make_single_sequence(values, start_idx=0, n_samples=CONFIG['n_train_samples'])
-    test_data = _make_single_sequence(values, start_idx=CONFIG['test_start_idx'], n_samples=CONFIG['n_test_samples'])
+    # Update model input channels based on dataset features.
+    CONFIG['in_features'] = int(train_data.shape[-1])
     print(f"   Train: {train_data.shape}, Test: {test_data.shape}")
     
     # Normalize
@@ -162,6 +143,7 @@ def main():
         window_size=CONFIG['window_size'],
         stride=CONFIG['stride']
     )
+
     train_data, _ = windowing.create_windows(train_data)
     test_data, _ = windowing.create_windows(test_data)
     print(f"   Windows: {train_data.shape}")
