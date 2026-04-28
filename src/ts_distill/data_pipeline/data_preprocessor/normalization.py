@@ -29,26 +29,32 @@ class MinMaxNormalization(BaseDataPreprocessor):
 
 
 class StandardNormalization(BaseDataPreprocessor):
-    
-    def __init__(self):
+
+    def __init__(self, per_channel=False):
         self.mean = None
         self.std = None
-    
+        self.per_channel = per_channel
+
     def fit(self, data):
-        self.mean = data.mean()
-        self.std = data.std()
+        if self.per_channel:
+            # data: (batch, time, channels) → stats shape: (1, 1, channels)
+            self.mean = data.mean(dim=(0, 1), keepdim=True)
+            self.std = data.std(dim=(0, 1), keepdim=True)
+        else:
+            self.mean = data.mean()
+            self.std = data.std()
         return self
-    
+
     def transform(self, data):
         if self.mean is None or self.std is None:
             raise ValueError("Call fit() before transform()")
         return (data - self.mean) / (self.std + 1e-8)
-    
+
     def inverse_transform(self, data):
         if self.mean is None or self.std is None:
             raise ValueError("Call fit() before inverse_transform()")
         return data * self.std + self.mean
-    
+
     def fit_transform(self, data):
         self.fit(data)
         return self.transform(data)

@@ -5,6 +5,7 @@ Implements minimal versions of base classes for testing pipeline.
 
 import torch
 import torch.nn as nn
+from torch.utils.data import TensorDataset, DataLoader
 from typing import Dict, Any, Tuple
 from copy import deepcopy
 import random
@@ -187,73 +188,73 @@ class SimpleEvaluator(BaseEvaluator):
     2. Testing on real data
     """
     
-    def __init__(self, model_factory, n_epochs=5, lr=0.001):
+    def __init__(self, model_factory, n_epochs=250, lr=1e-4, momentum=0.9, batch_size=64):
         """
         model_factory: Function that returns a new model instance
         """
         self.model_factory = model_factory
         self.n_epochs = n_epochs
         self.lr = lr
-        
+        self.momentum = momentum
+        self.batch_size = batch_size
+
     def train_on_synthetic(self, synthetic_data, model=None):
         """
-        Train a fresh model on synthetic data.
+        Train a fresh model on synthetic data using mini-batch SGD.
         synthetic_data: Tensor of shape (N, Seq, Features)
         """
         if model is None:
             model = self.model_factory()
-            
-        # Ensure model is on the correct device
+
         device = synthetic_data.device
         model = model.to(device)
         model.train()
-        
+
+        seq_len = synthetic_data.shape[1] // 2
+        inputs  = synthetic_data[:, :seq_len, :].detach()
+        targets = synthetic_data[:, seq_len:, :].detach()
+
+        dataset = TensorDataset(inputs, targets)
+        loader  = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+
         optimizer = torch.optim.Adam(model.parameters(), lr=self.lr)
         criterion = nn.MSELoss()
-        
-        # Simple training loop
+
         for epoch in range(self.n_epochs):
-            optimizer.zero_grad()
-            
-            # Split into inputs (past) and targets (future)
-            # Input: First half (Tin = 24)
-            # Target: Second half (Tout = 24)
-            seq_len = synthetic_data.shape[1] // 2
-            inputs = synthetic_data[:, :seq_len, :]
-            targets = synthetic_data[:, seq_len:, :]
-            
-            # Predict using only past data
-            output = model(inputs)
-            
-            loss = criterion(output, targets)
-            loss.backward()
-            optimizer.step()
-            
+            for X_batch, Y_batch in loader:
+                optimizer.zero_grad()
+                output = model(X_batch)
+                loss   = criterion(output, Y_batch)
+                loss.backward()
+                optimizer.step()
+
         return model
-    
+
     def test_on_real(self, model, real_test_data):
         """
-        Evaluate model on real data.
-        real_test_data: Tensor of shape (N, Seq, Features) representing properly windowed test data
+        Evaluate model on real data using mini-batches.
+        real_test_data: Tensor of shape (N, Seq, Features)
         """
         device = real_test_data.device
-        model = model.to(device)
+        model  = model.to(device)
         model.eval()
-        criterion = nn.MSELoss()
-        
+        criterion = nn.MSELoss(reduction='sum')
+
+        seq_len = real_test_data.shape[1] // 2
+        inputs  = real_test_data[:, :seq_len, :]
+        targets = real_test_data[:, seq_len:, :]
+
+        dataset = TensorDataset(inputs, targets)
+        loader  = DataLoader(dataset, batch_size=self.batch_size, shuffle=False)
+
+        total_loss, n = 0.0, 0
         with torch.no_grad():
-            # Split into inputs (past) and targets (future)
-            seq_len = real_test_data.shape[1] // 2
-            inputs = real_test_data[:, :seq_len, :]
-            targets = real_test_data[:, seq_len:, :]
-            
-            # Predict using only past data
-            output = model(inputs)
-            
-            loss = criterion(output, targets)
-            
-        avg_loss = loss.item()
-        
+            for X_batch, Y_batch in loader:
+                output = model(X_batch)
+                total_loss += criterion(output, Y_batch).item()
+                n += Y_batch.numel()
+
+        avg_loss = total_loss / n
         return {
             'MSE': avg_loss,
             'RMSE': avg_loss ** 0.5
@@ -320,11 +321,9 @@ class SimpleTrainer(BaseTrainer):
         for batch in dataloader:
             self.optimizer.zero_grad()
             
-            # Split into inputs (past) and targets (future)
-            # Input: all timesteps except the last one
-            # Target: only the last timestep
-            inputs = batch[:, :24, :]
-            targets = batch[:, 24:, :]
+            seq_len = batch.shape[1] // 2
+            inputs  = batch[:, :seq_len, :]
+            targets = batch[:, seq_len:, :]
             
             # Predict using only past data
             output = self.model(inputs)
