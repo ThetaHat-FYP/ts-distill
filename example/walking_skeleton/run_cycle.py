@@ -9,18 +9,18 @@ import sys
 from pathlib import Path
 
 from ts_distill.distillation_core.distillation_algorithm.mtt import MTTDistiller
+from ts_distill.evaluation.evaluation import Evaluator
 from ts_distill.models.dlinear import DLinear
 from ts_distill.models.lstm import LSTM
 from ts_distill.models.mlp import MLP
 from ts_distill.models.cnn import CNN
+from ts_distill.trainer.trainer.trainer import Trainer
 
 
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from example.walking_skeleton.etth1_loader import ETTh1DataLoader
-from example.walking_skeleton.mock_components import ( SimpleRecorder, SimpleEvaluator, 
-    SimpleTrainer, SimpleCallback, MSEMatcher, RealSampleInitializer
-)
+from example.walking_skeleton.mock_components import ( SimpleRecorder, SimpleCallback, MSEMatcher, RealSampleInitializer)
 from src.ts_distill.distillation_core.distillation_algorithm.condtsf import CondTSFDistiller
 from src.ts_distill.distillation_core.distillation_algorithm.frepo import FRePODistiller
 # from src.ts_distill.distillation_core.distillation_algorithm.mtt import MTTDistiller
@@ -202,7 +202,7 @@ def main():
     )
     criterion = torch.nn.MSELoss()
     
-    trainer = SimpleTrainer(
+    trainer = Trainer(
         model=expert_model,
         optimizer=optimizer,
         criterion=criterion,
@@ -268,7 +268,7 @@ def main():
     print("6. Evaluating performance...")
 
     # Full-data evaluator: standard DLinear protocol (10 epochs, Adam lr=0.0001, batch=32)
-    full_evaluator = SimpleEvaluator(
+    full_evaluator = Evaluator(
         model_factory=create_model,
         n_epochs=CONFIG['eval_epochs_fulldata'],
         lr=CONFIG['eval_lr_fulldata'],
@@ -276,7 +276,7 @@ def main():
     )
 
     # Synthetic evaluator: extended training to saturate small dataset (500 epochs)
-    syn_evaluator = SimpleEvaluator(
+    syn_evaluator = Evaluator(
         model_factory=create_model,
         n_epochs=CONFIG['eval_epochs_synthetic'],
         lr=CONFIG['eval_lr_synthetic'],
