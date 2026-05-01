@@ -1,313 +1,353 @@
 """
-MTT Walking Skeleton - End-to-End Pipeline
-Time series data distillation using Matching Training Trajectories.
+MTT Pipeline — User Entry Point
+================================
+This is the script you run to perform time-series dataset distillation
+using the Matching Training Trajectories (MTT) algorithm.
+
+Workflow
+--------
+  1.  Edit CONFIG below to choose your dataset, model, and hyper-parameters.
+  2.  Run from the project root:
+          python -m example.walking_skeleton.run_cycle
+      or simply:
+          python example/walking_skeleton/run_cycle.py
+
+What this script does
+---------------------
+  Step 1 — Load raw CSV data, compute train/val/test splits, normalise.
+  Step 2 — Train an "expert" model and record its weight trajectory.
+  Step 3 — Run the MTT distillation loop to learn a compact synthetic sequence.
+  Step 4 — Train two evaluation models (one on real data, one on synthetic)
+            and compare their test-set MSE to measure distillation quality.
 """
 
-import torch
-import pandas as pd
 import sys
 from pathlib import Path
 
-from ts_distill.distillation_core.distillation_algorithm.mtt import MTTDistiller
-from ts_distill.evaluation.evaluation import Evaluator
-from ts_distill.models.dlinear import DLinear
-from ts_distill.models.lstm import LSTM
-from ts_distill.models.mlp import MLP
-from ts_distill.models.cnn import CNN
-from ts_distill.trainer.trainer.trainer import Trainer
+import numpy as np
+import pandas as pd
+import torch
+from sklearn.preprocessing import StandardScaler
+from torch.utils.data import DataLoader as TorchDataLoader
 
-
+# ── Make the project root importable (needed when running as a plain script) ──
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
-from example.walking_skeleton.etth1_loader import ETTh1DataLoader
-from example.walking_skeleton.mock_components import ( SimpleRecorder, SimpleCallback, MSEMatcher, RealSampleInitializer)
-from src.ts_distill.distillation_core.distillation_algorithm.condtsf import CondTSFDistiller
-from src.ts_distill.distillation_core.distillation_algorithm.frepo import FRePODistiller
-# from src.ts_distill.distillation_core.distillation_algorithm.mtt import MTTDistiller
-from src.ts_distill.data_pipeline.data_windowing.fixed_windowing import FixedWindowing
-from src.ts_distill.data_pipeline.data_preprocessor.normalization import StandardNormalization
+# ── Framework — data utilities ────────────────────────────────────────────────
+from ts_distill.data_pipeline.splitter import get_data_splits, make_windows
+from ts_distill.data_pipeline.data_loader.mini_batch_loader import MiniBatchLoader
+
+# ── Framework — models ────────────────────────────────────────────────────────
+from ts_distill.models.factory import create_model
+
+# ── Framework — distillation ──────────────────────────────────────────────────
+from ts_distill.distillation_core.distillation_algorithm.mtt import MTTDistiller
+from ts_distill.distillation_core.initializer.real_sample_initializer import RealSampleInitializer
+
+# ── Framework — training infrastructure ──────────────────────────────────────
+from ts_distill.trainer.trainer.trainer import Trainer
+from ts_distill.trainer.callback.simple_callback import SimpleCallback
+
+# ── Framework — trajectory tools ──────────────────────────────────────────────
+from ts_distill.trajectory.recorder.simple_recorder import SimpleRecorder
+from ts_distill.trajectory.matcher.mse_matcher import MSEMatcher
+
+# ── Framework — evaluation ────────────────────────────────────────────────────
+from ts_distill.evaluation.evaluation import Evaluator
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Configuration
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
+# =============================================================================
+# CONFIG — edit this section to run different experiments
+# =============================================================================
 
 CONFIG = {
-    # Data
-    'csv_path': 'example/ETTh1.csv',
-    'use_all_channels': True,    # All 7 ETTh1 channels
+    # ── Pipeline selectors ───────────────────────────────────────────────────
+    # Switch 'active_model'   to try a different architecture.
+    # Switch 'active_dataset' to run on a different ETT variant.
+    'active_model':   'DLinear',
+    'active_dataset': 'ETTh1',
 
-    # Windowing
-    'window_size': 192,          # seq_len + pred_len = 96 + 96
-    'stride': 1,
+    # ── Forecasting dimensions ───────────────────────────────────────────────
+    'in_features': 7,    # Number of multivariate channels in the dataset
+    'seq_len':    96,    # Look-back window fed to the model as input
+    'pred_len':   96,    # Forecast horizon the model must predict
 
-    # Expert Training
-    'expert_epochs': 80,
-    'expert_lr': 0.01,           # must be close to student_lr so trajectories are matchable
+    # ── Dataset configurations ───────────────────────────────────────────────
+    # benchmark_borders: row indices that reproduce published paper splits.
+    # ratios:            proportional splits for custom datasets.
+    'datasets': {
+        'ETTh1': {
+            'csv_path':   'example/ETTh1.csv',
+            'split_mode': 'benchmark_borders',
+            # Hourly data — 12 months train, 4 months val, 4 months test
+            'border1s': [0, 12 * 30 * 24 - 96, 12 * 30 * 24 + 4 * 30 * 24 - 96],
+            'border2s': [12 * 30 * 24, 12 * 30 * 24 + 4 * 30 * 24, 12 * 30 * 24 + 8 * 30 * 24],
+        },
+        'ETTh2': {
+            'csv_path':   'example/ETTh2.csv',
+            'split_mode': 'benchmark_borders',
+            'border1s': [0, 12 * 30 * 24 - 96, 12 * 30 * 24 + 4 * 30 * 24 - 96],
+            'border2s': [12 * 30 * 24, 12 * 30 * 24 + 4 * 30 * 24, 12 * 30 * 24 + 8 * 30 * 24],
+        },
+        'ETTm1': {
+            'csv_path':   'example/ETTm1.csv',
+            'split_mode': 'benchmark_borders',
+            # 15-minute data — multiply by 96 instead of 24
+            'border1s': [0, 12 * 30 * 96 - 96, 12 * 30 * 96 + 4 * 30 * 96 - 96],
+            'border2s': [12 * 30 * 96, 12 * 30 * 96 + 4 * 30 * 96, 12 * 30 * 96 + 8 * 30 * 96],
+        },
+        'ETTm2': {
+            'csv_path':   'example/ETTm2.csv',
+            'split_mode': 'benchmark_borders',
+            'border1s': [0, 12 * 30 * 96 - 96, 12 * 30 * 96 + 4 * 30 * 96 - 96],
+            'border2s': [12 * 30 * 96, 12 * 30 * 96 + 4 * 30 * 96, 12 * 30 * 96 + 8 * 30 * 96],
+        },
+        'General': {
+            'csv_path':    'example/custom_dataset.csv',
+            'split_mode':  'ratios',
+            'train_ratio': 0.6,
+            'val_ratio':   0.2,
+        },
+    },
+
+    # ── Model-specific kwargs (passed to create_model) ────────────────────────
+    # Add any constructor keyword arguments your chosen model needs here.
+    'models': {
+        'DLinear': {'individual': False},
+        'LSTM':    {'hidden_dim': 16, 'num_layers': 1},
+        'MLP':     {},
+        'CNN':     {},
+    },
+
+    # ── Expert training ───────────────────────────────────────────────────────
+    'expert_epochs':   80,    # Total SGD epochs for the expert trajectory
+    'expert_lr':       0.01,
     'expert_momentum': 0.9,
 
-    # Distillation  (CondTSF paper settings for MTT baseline)
-    'n_distill_steps': 300,      # CondTSF: 300 outer iterations
-    'n_synthetic': 384,          # M=384 per HDT/CondTSF paper Table 1
-    'compression_ratio': 0.0333, # kept for FRePO distiller
-    'synthetic_lr': 0.1,
-    'student_lr': 0.01,
-    'student_steps': 20,         # CondTSF: 20 student unroll steps
-    'batch_size': 64,            # CondTSF: batch size 64
-    'trajectory_gap': 5,
-    'cond_gap': 3,
-    'beta': 0.01,
-    'frepo_online_lr': 0.001,
-    'frepo_online_updates': 10,
-    'frepo_ridge_lambda': 0.001,
+    # ── Distillation loop ─────────────────────────────────────────────────────
+    'n_distill_steps':       500,  # Outer-loop iterations (matches HDT paper)
+    'n_synthetic':            384,  # Length of the synthetic continuous sequence
+    'synthetic_lr':           0.1,  # Learning rate for the synthetic sequence tensor
+    'student_lr':            0.01,  # Inner-loop student learning rate
+    'student_steps':           20,  # Inner-loop gradient steps (matches HDT paper)
+    'snapshot_student_steps':  50,  # Steps used to train the temp validation student
+    'batch_size':              64,
+    'trajectory_gap':           5,  # Step gap when sampling expert checkpoint pairs
 
-    # Evaluation - Full Data baseline  (standard DLinear: Adam lr=0.0001, 10 epochs)
-    'eval_epochs_fulldata': 10,
-    'eval_lr_fulldata': 0.0001,
-    'eval_batch_fulldata': 32,
-
-    # Evaluation - Synthetic data  (small dataset needs more epochs to saturate)
-    'eval_epochs_synthetic': 300,
-    'eval_lr_synthetic': 0.001,
-    'eval_batch_synthetic': 64,
-
-    # Model
-    'hidden_size': 16,
-    'num_layers': 1,
-
-    # Model Setup  (paper §B.4: l=96, t=96, 7-channel multivariate)
-    'in_features': 7,            # All 7 ETTh1 channels
-    'seq_len': 96,               # Tin
-    'pred_len': 96               # Tout
+    # ── Evaluation ────────────────────────────────────────────────────────────
+    'eval_epochs_fulldata':   10,   # Epochs to train the real-data evaluation model
+    'eval_lr_fulldata':     0.001,
+    'eval_batch_fulldata':     32,
+    'early_stop_patience':      3,  # Val epochs without improvement → stop early
+    'eval_epochs_synthetic':  300,  # Epochs to train the synthetic-data evaluation model
+    'eval_lr_synthetic':    0.001,
+    'eval_batch_synthetic':    64,
 }
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Pipeline
-# ═══════════════════════════════════════════════════════════════════════════════
+# Derived constant — total timesteps per sliding window
+CONFIG['window_size'] = CONFIG['seq_len'] + CONFIG['pred_len']
 
 
-# Update your factory function
-def create_model():
-    return DLinear(
-        seq_len=CONFIG['seq_len'],
-        pred_len=CONFIG['pred_len'],
-        channels=CONFIG['in_features'],
-        individual=True
+# =============================================================================
+# Model factory helper
+# =============================================================================
+
+def make_model():
+    """
+    Create a fresh, randomly-initialised instance of the active model.
+
+    Called multiple times throughout the pipeline (expert, distiller inner
+    loop, evaluation), so each call returns an independent copy with its own
+    weights.  Reads from CONFIG so you only need to change 'active_model' once.
+    """
+    return create_model(
+        model_type   = CONFIG['active_model'],
+        seq_len      = CONFIG['seq_len'],
+        pred_len     = CONFIG['pred_len'],
+        in_features  = CONFIG['in_features'],
+        model_kwargs = CONFIG['models'][CONFIG['active_model']],
     )
 
-    # return MLP(
-    #     seq_len=CONFIG['seq_len'],
-    #     pred_len=CONFIG['pred_len'],
-    # )
 
-    # return LSTM(
-    #     input_dim=CONFIG['in_features'],
-    #     hidden_dim=CONFIG['hidden_size'],
-    #     num_layer=CONFIG['num_layers'],
-    #     seq_len=CONFIG['seq_len'],
-    #     pred_len=CONFIG['pred_len'],
-    # )
-
-    # return CNN(
-    #     channel=CONFIG['in_features'],
-    #     seq_len=CONFIG['seq_len'],
-    #     pred_len=CONFIG['pred_len'],
-    # )
-
-
-class MiniBatchLoader:
-    """Yields shuffled mini-batches from a tensor dataset each epoch."""
-    def __init__(self, data, batch_size=64, shuffle=True):
-        self.data = data
-        self.batch_size = batch_size
-        self.shuffle = shuffle
-
-    def __iter__(self):
-        n = self.data.shape[0]
-        idx = torch.randperm(n) if self.shuffle else torch.arange(n)
-        for i in range(0, n, self.batch_size):
-            yield self.data[idx[i : i + self.batch_size]]
-
+# =============================================================================
+# Main pipeline
+# =============================================================================
 
 def main():
-    """Execute MTT distillation pipeline."""
-    
-    print("\nMTT Data Distillation Pipeline  [ETTh1, 7ch, seq=96, pred=96, 60/20/20 split, M=384]")
+    print(f"\nMTT Pipeline | Model: {CONFIG['active_model']} | Dataset: {CONFIG['active_dataset']}")
     print("=" * 70)
-    
+
     torch.manual_seed(42)
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'  
-    
-    # Load data  (ETT 60:20:20 chronological split per paper §B.4)
-    print("\n1. Loading data...")
-    total_rows = len(pd.read_csv(CONFIG['csv_path']))
-    n_train = int(total_rows * 0.60)
-    n_val   = int(total_rows * 0.20)
-    n_test_start = n_train + n_val
-    n_test = total_rows - n_test_start
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    train_loader = ETTh1DataLoader(
-        CONFIG['csv_path'],
-        n_samples=n_train,
-        seq_len=1,
-        batch_size=n_train,
-        start_idx=0,
-        single_sequence=True,
-        use_all_channels=CONFIG['use_all_channels']
-    )
-    train_loader.load_data()
+    # ─────────────────────────────────────────────────────────────────────────
+    # Step 1 — Load and normalise data
+    # ─────────────────────────────────────────────────────────────────────────
+    print("\n[1/4] Loading and normalising data...")
 
-    test_loader = ETTh1DataLoader(
-        CONFIG['csv_path'],
-        n_samples=n_test,
-        seq_len=1,
-        batch_size=n_test,
-        start_idx=n_test_start,
-        single_sequence=True,
-        use_all_channels=CONFIG['use_all_channels']
+    dataset_cfg = CONFIG['datasets'][CONFIG['active_dataset']]
+    df_raw      = pd.read_csv(dataset_cfg['csv_path'])
+    values      = df_raw.iloc[:, 1:].values.astype(np.float32)  # drop the date column
+
+    # Compute row-level split boundaries (train / val / test)
+    train_start, train_end, val_start, val_end, test_start, test_end = get_data_splits(
+        values      = values,
+        window_size = CONFIG['window_size'],
+        seq_len     = CONFIG['seq_len'],
+        dataset_cfg = dataset_cfg,
     )
-    test_loader.load_data()
-    
-    train_data = train_loader.data
-    test_data = test_loader.data
-    print(f"   Train: {train_data.shape}, Test: {test_data.shape}")
-    
-    # Normalize  (per-channel: each of the 7 channels normalized independently)
-    print("2. Normalizing data...")
-    normalizer = StandardNormalization(per_channel=True)
-    train_data = normalizer.fit_transform(train_data)
-    test_data = normalizer.transform(test_data)
-    
-    # Apply windowing
-    print("3. Applying windowing...")
-    windowing = FixedWindowing(
-        window_size=CONFIG['window_size'],
-        stride=CONFIG['stride']
+
+    # Fit StandardScaler ONLY on training rows — prevents data leakage into
+    # validation and test sets.
+    scaler = StandardScaler()
+    scaler.fit(values[train_start:train_end])
+    data = scaler.transform(values)
+
+    # Slice each split and convert to overlapping (window, timestep, feature) tensors.
+    # Shape: (N_windows, window_size, in_features)
+    train_data = torch.tensor(make_windows(data[train_start:train_end], CONFIG['window_size']), dtype=torch.float32)
+    val_data   = torch.tensor(make_windows(data[val_start:val_end],     CONFIG['window_size']), dtype=torch.float32)
+    test_data  = torch.tensor(make_windows(data[test_start:test_end],   CONFIG['window_size']), dtype=torch.float32)
+
+    print(f"   Train: {train_data.shape}  Val: {val_data.shape}  Test: {test_data.shape}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Step 2 — Train the expert model and record its weight trajectory
+    # ─────────────────────────────────────────────────────────────────────────
+    print("\n[2/4] Training expert model and recording trajectory...")
+
+    recorder       = SimpleRecorder(record_every=1)   # save weights every epoch
+    expert_model   = make_model()
+    expert_trainer = Trainer(
+        model     = expert_model,
+        optimizer = torch.optim.SGD(
+            expert_model.parameters(),
+            lr       = CONFIG['expert_lr'],
+            momentum = CONFIG['expert_momentum'],
+        ),
+        criterion = torch.nn.MSELoss(),
+        device    = device,
+        seq_len   = CONFIG['seq_len'],
     )
-    train_data, _ = windowing.create_windows(train_data)
-    test_data, _ = windowing.create_windows(test_data)
-    print(f"   Windows: {train_data.shape}")
-    
-    # Train expert
-    print("4. Training expert model...")
-    expert_model = create_model()
-    recorder = SimpleRecorder(record_every=1)
-    optimizer = torch.optim.SGD(
-        expert_model.parameters(), 
-        lr=CONFIG['expert_lr'], 
-        momentum=CONFIG['expert_momentum']
+
+    # MiniBatchLoader is a lightweight in-memory loader — no PyTorch Dataset needed.
+    expert_loader = MiniBatchLoader(train_data, batch_size=CONFIG['batch_size'])
+
+    # Pass recorder and printer as callbacks — they hook into fit() automatically.
+    expert_trainer.fit(
+        dataloader = expert_loader,
+        epochs     = CONFIG['expert_epochs'],
+        callbacks  = [recorder, SimpleCallback()],
     )
-    criterion = torch.nn.MSELoss()
-    
-    trainer = Trainer(
-        model=expert_model,
-        optimizer=optimizer,
-        criterion=criterion,
-        device='cpu'
-    )
-    
-    callbacks = [recorder, SimpleCallback()]
-    dataloader = MiniBatchLoader(train_data, batch_size=CONFIG['batch_size'])
-    trainer.fit(dataloader, epochs=CONFIG['expert_epochs'], callbacks=callbacks)
-    print(f"   Checkpoints: {len(recorder.get_trajectory())}")
-    
-    # Distill synthetic data
-    print("5. Distilling synthetic data...")
+
+    print(f"   Checkpoints recorded: {len(recorder.get_trajectory())}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Step 3 — Distil a compact synthetic sequence using MTT
+    # ─────────────────────────────────────────────────────────────────────────
+    print("\n[3/4] Distilling synthetic sequence...")
+
+    # The distiller needs the raw (un-windowed) training data so it can
+    # initialise and optimise a single continuous sequence of n_synthetic
+    # timesteps rather than a bag of independent windows.
+    raw_train_data = torch.tensor(data[train_start:train_end], dtype=torch.float32)
+
     distiller = MTTDistiller(
-        initializer=RealSampleInitializer(),
-        matcher=MSEMatcher(),
-        model_factory=create_model,
-        expert_recorder=recorder,
-        expert_epochs=CONFIG['trajectory_gap'],
-        syn_batch_size=CONFIG['batch_size'],
-        synthetic_lr=CONFIG['synthetic_lr'],
-        student_lr=CONFIG['student_lr'],
-        student_steps=CONFIG['student_steps']
+        initializer           = RealSampleInitializer(),
+        matcher               = MSEMatcher(),
+        model_factory         = make_model,             # called fresh each inner loop
+        expert_recorder       = recorder,
+        expert_epochs         = CONFIG['trajectory_gap'],
+        syn_batch_size        = CONFIG['batch_size'],
+        synthetic_lr          = CONFIG['synthetic_lr'],
+        student_lr            = CONFIG['student_lr'],
+        student_steps         = CONFIG['student_steps'],
+        snapshot_student_steps= CONFIG['snapshot_student_steps'],
+        seq_len               = CONFIG['seq_len'],
+        pred_len              = CONFIG['pred_len'],
     )
 
-    # distiller = CondTSFDistiller(
-    #     initializer=RealSampleInitializer(),
-    #     matcher=MSEMatcher(),
-    #     model_factory=create_model,
-    #     teacher_state_dict={k: v.detach().cpu().clone() for k, v in expert_model.state_dict().items()},
-    #     expert_epochs=CONFIG['trajectory_gap'],
-    #     syn_batch_size=CONFIG['batch_size'],
-    #     synthetic_lr=CONFIG['synthetic_lr'],
-    #     student_lr=CONFIG['student_lr'],
-    #     student_steps=CONFIG['student_steps'],
-    #     cond_gap=CONFIG['cond_gap'],
-    #     beta=CONFIG['beta'],
-    #     device=device
-    # )
-
-    # distiller = FRePODistiller(
-    #     initializer=RealSampleInitializer(),
-    #     matcher=MSEMatcher(),
-    #     model_factory=create_model,
-    #     synthetic_lr=CONFIG['synthetic_lr'],
-    #     online_lr=CONFIG['frepo_online_lr'],
-    #     online_updates=CONFIG['frepo_online_updates'],
-    #     syn_batch_size=min(128, max(1, int(train_data.shape[0] * CONFIG['compression_ratio']))),
-    #     real_batch_size=256,
-    #     ridge_lambda=CONFIG['frepo_ridge_lambda'],
-    #     device=device,
-    # )
-    
     n_synthetic = CONFIG['n_synthetic']
-    synthetic_data = distiller.distill(
-        train_data,
-        n_steps=CONFIG['n_distill_steps'],
-        n_synthetic=n_synthetic
-    )
-    print(f"   Compression: {train_data.shape[0]} → {n_synthetic} samples ({n_synthetic/train_data.shape[0]*100:.1f}%)")
-    
-    # Evaluate
-    print("6. Evaluating performance...")
 
-    # Full-data evaluator: standard DLinear protocol (10 epochs, Adam lr=0.0001, batch=32)
-    full_evaluator = Evaluator(
-        model_factory=create_model,
-        n_epochs=CONFIG['eval_epochs_fulldata'],
-        lr=CONFIG['eval_lr_fulldata'],
-        batch_size=CONFIG['eval_batch_fulldata']
+    # val_data is passed so the distiller saves the best synthetic sequence
+    # (lowest validation MSE) rather than always returning the last-step result.
+    synthetic_sequence = distiller.distill(
+        raw_source_data = raw_train_data,
+        n_steps         = CONFIG['n_distill_steps'],
+        n_synthetic     = n_synthetic,
+        val_data        = val_data,
     )
 
-    # Synthetic evaluator: extended training to saturate small dataset (500 epochs)
-    syn_evaluator = Evaluator(
-        model_factory=create_model,
-        n_epochs=CONFIG['eval_epochs_synthetic'],
-        lr=CONFIG['eval_lr_synthetic'],
-        batch_size=CONFIG['eval_batch_synthetic']
+    print(f"   Compressed: {len(raw_train_data)} timesteps → {n_synthetic} timesteps")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Step 4 — Evaluate: real-data model vs. synthetic-data model
+    # ─────────────────────────────────────────────────────────────────────────
+    print("\n[4/4] Evaluating...")
+
+    # -- 4a. Train on full real data (with early stopping on the val set) -----
+    real_model   = make_model()
+    real_trainer = Trainer(
+        model     = real_model,
+        optimizer = torch.optim.Adam(real_model.parameters(), lr=CONFIG['eval_lr_fulldata']),
+        criterion = torch.nn.MSELoss(),
+        device    = device,
+        seq_len   = CONFIG['seq_len'],
+    )
+    real_loader = TorchDataLoader(train_data, batch_size=CONFIG['eval_batch_fulldata'], shuffle=True)
+    val_loader  = TorchDataLoader(val_data,   batch_size=CONFIG['eval_batch_fulldata'], shuffle=False)
+
+    real_trainer.fit(
+        dataloader = real_loader,
+        epochs     = CONFIG['eval_epochs_fulldata'],
+        val_loader = val_loader,
+        patience   = CONFIG['early_stop_patience'],
     )
 
-    real_model = full_evaluator.train_on_synthetic(train_data)
-    real_metrics = full_evaluator.test_on_real(real_model, test_data.to(device))
+    # -- 4b. Train on distilled synthetic data --------------------------------
+    # Convert the 1-D synthetic sequence into sliding windows first.
+    syn_windows = torch.tensor(
+        make_windows(synthetic_sequence.cpu().numpy(), CONFIG['window_size']),
+        dtype=torch.float32,
+    )
 
-    synthetic_model = syn_evaluator.train_on_synthetic(synthetic_data)
-    synthetic_metrics = syn_evaluator.test_on_real(synthetic_model, test_data.to(device))
-    
-    performance_ratio = (synthetic_metrics['MSE'] / real_metrics['MSE']) * 100
+    syn_model   = make_model()
+    syn_trainer = Trainer(
+        model     = syn_model,
+        optimizer = torch.optim.Adam(syn_model.parameters(), lr=CONFIG['eval_lr_synthetic']),
+        criterion = torch.nn.MSELoss(),
+        device    = device,
+        seq_len   = CONFIG['seq_len'],
+    )
+    syn_loader = TorchDataLoader(syn_windows, batch_size=CONFIG['eval_batch_synthetic'], shuffle=True)
+    syn_trainer.fit(syn_loader, epochs=CONFIG['eval_epochs_synthetic'])
+
+    # -- 4c. Score both models on the real held-out test set ------------------
+    evaluator         = Evaluator(seq_len=CONFIG['seq_len'], batch_size=CONFIG['eval_batch_fulldata'])
+    real_metrics      = evaluator.test_on_real(real_model, test_data.to(device))
+    synthetic_metrics = evaluator.test_on_real(syn_model,  test_data.to(device))
+
+    performance_ratio     = (synthetic_metrics['MSE'] / real_metrics['MSE']) * 100
     performance_retention = (real_metrics['MSE'] / synthetic_metrics['MSE']) * 100
-    
-    print("\nResults:")
-    print(f"   Real MSE:      {real_metrics['MSE']:.6f}")
-    print(f"   Synthetic MSE: {synthetic_metrics['MSE']:.6f}")
-    print(f"   Error Ratio:   {(synthetic_metrics['MSE'] / real_metrics['MSE']):.2f}x original error")
-    print(f"   Perf Retained: {performance_retention:.1f}%")
-    print(f"   Compression:   {n_synthetic}/{train_data.shape[0]} ({n_synthetic/train_data.shape[0]*100:.2f}%)")
+
     print("\n" + "=" * 70)
+    print("Results")
+    print("=" * 70)
+    print(f"   Real-data MSE:      {real_metrics['MSE']:.6f}")
+    print(f"   Synthetic-data MSE: {synthetic_metrics['MSE']:.6f}")
+    print(f"   Error ratio:        {synthetic_metrics['MSE'] / real_metrics['MSE']:.2f}x")
+    print(f"   Performance kept:   {performance_retention:.1f}%")
+    print(f"   Compression:        {n_synthetic}/{train_data.shape[0]} windows "
+          f"({n_synthetic / train_data.shape[0] * 100:.2f}%)")
+    print("=" * 70)
     print("Pipeline complete.\n")
 
-
     return {
-        'train_data': train_data,
-        'synthetic_data': synthetic_data,
-        'real_mse': real_metrics['MSE'],
-        'synthetic_mse': synthetic_metrics['MSE'],
-        'performance_ratio': performance_ratio
+        'train_data':        train_data,
+        'synthetic_data':    synthetic_sequence,
+        'real_mse':          real_metrics['MSE'],
+        'synthetic_mse':     synthetic_metrics['MSE'],
+        'performance_ratio': performance_ratio,
     }
 
 

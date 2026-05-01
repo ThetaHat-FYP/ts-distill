@@ -39,10 +39,11 @@ class StandardNormalization(BaseDataPreprocessor):
         if self.per_channel:
             # data: (batch, time, channels) → stats shape: (1, 1, channels)
             self.mean = data.mean(dim=(0, 1), keepdim=True)
-            self.std = data.std(dim=(0, 1), keepdim=True)
+            # Use population std (ddof=0) to match sklearn StandardScaler.
+            self.std = data.std(dim=(0, 1), keepdim=True, unbiased=False)
         else:
             self.mean = data.mean()
-            self.std = data.std()
+            self.std = data.std(unbiased=False)
         return self
 
     def transform(self, data):
