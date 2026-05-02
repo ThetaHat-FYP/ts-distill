@@ -125,7 +125,7 @@ CONFIG = {
     'expert_momentum': 0.9,
 
     # ── Distillation loop ─────────────────────────────────────────────────────
-    'n_distill_steps':       500,  # Outer-loop iterations (matches HDT paper)
+    'n_distill_steps':       300,  # Outer-loop iterations (matches HDT paper)
     'n_synthetic':            384,  # Length of the synthetic continuous sequence
     'synthetic_lr':           0.1,  # Learning rate for the synthetic sequence tensor
     'student_lr':            0.01,  # Inner-loop student learning rate
@@ -167,6 +167,7 @@ def make_model():
         in_features  = CONFIG['in_features'],
         model_kwargs = CONFIG['models'][CONFIG['active_model']],
     )
+
 
 
 # =============================================================================
@@ -247,15 +248,23 @@ def main():
     # ─────────────────────────────────────────────────────────────────────────
     print("\n[3/4] Distilling synthetic sequence...")
 
-    # The distiller needs the raw (un-windowed) training data so it can
-    # initialise and optimise a single continuous sequence of n_synthetic
-    # timesteps rather than a bag of independent windows.
+    # Raw (un-windowed) training data is needed for initialisation.
+    # The distiller works on a single continuous sequence, not a bag of windows.
     raw_train_data = torch.tensor(data[train_start:train_end], dtype=torch.float32)
 
+    n_synthetic = CONFIG['n_synthetic']
+
+    # --- Initialise the synthetic sequence -----------------------------------
+    # Create the initializer once so the same instance is both used to produce
+    # the starting tensor AND stored inside the distiller for future reference.
+    initializer    = RealSampleInitializer()
+    synthetic_init = initializer.initialize_sequence(raw_train_data, n_synthetic)
+
+    # --- Build the distiller -------------------------------------------------
     distiller = MTTDistiller(
-        initializer           = RealSampleInitializer(),
+        initializer           = initializer,
         matcher               = MSEMatcher(),
-        model_factory         = make_model,             # called fresh each inner loop
+        model_factory         = make_model,   # called fresh on each inner loop
         expert_recorder       = recorder,
         expert_epochs         = CONFIG['trajectory_gap'],
         syn_batch_size        = CONFIG['batch_size'],
@@ -267,14 +276,11 @@ def main():
         pred_len              = CONFIG['pred_len'],
     )
 
-    n_synthetic = CONFIG['n_synthetic']
-
-    # val_data is passed so the distiller saves the best synthetic sequence
-    # (lowest validation MSE) rather than always returning the last-step result.
+    # val_data is passed so the distiller tracks the best snapshot
+    # (lowest validation MSE) and returns it instead of the final-step result.
     synthetic_sequence = distiller.distill(
-        raw_source_data = raw_train_data,
+        synthetic_init  = synthetic_init,
         n_steps         = CONFIG['n_distill_steps'],
-        n_synthetic     = n_synthetic,
         val_data        = val_data,
     )
 

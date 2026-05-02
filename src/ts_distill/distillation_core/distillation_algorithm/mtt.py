@@ -45,25 +45,36 @@ class MTTDistiller(BaseDistiller):
 
     def distill(
         self,
-        raw_source_data: torch.Tensor,
+        synthetic_init: torch.Tensor,
         n_steps: int,
-        n_synthetic: int = 384,
         val_data: Optional[torch.Tensor] = None,
         val_snapshot_every: int = 50,
     ) -> torch.Tensor:
         """
+        Run the MTT outer loop to optimise the synthetic sequence.
+
+        The caller is responsible for creating the initial synthetic tensor
+        (see init_synthetic_sequence() in run_cycle.py).  This keeps
+        initialisation strategy separate from the distillation algorithm.
+
         Args:
-            val_data:           Windowed validation windows (N_val, window_size, features).
-                                When provided, a temporary student is evaluated every
-                                `val_snapshot_every` steps and the best-scoring synthetic
-                                sequence is returned instead of the final one.
+            synthetic_init:     Starting synthetic sequence, shape (M, C).
+                                Must already have requires_grad=True.
+                                Produced by init_synthetic_sequence().
+            n_steps:            Number of outer-loop optimisation steps.
+            val_data:           Windowed validation windows (N_val, window_size, C).
+                                When provided, a temporary student is scored every
+                                `val_snapshot_every` steps; the best-scoring
+                                snapshot is returned instead of the final one.
             val_snapshot_every: Outer-loop step interval for snapshot evaluation.
         """
-        start_idx = torch.randint(0, len(raw_source_data) - n_synthetic, (1,)).item()
-        synthetic_data = raw_source_data[start_idx : start_idx + n_synthetic].clone().to(self.device)
-        synthetic_data.requires_grad_(True)
+        # Move to the distiller's device and keep the gradient tape alive.
+        synthetic_data = synthetic_init.to(self.device)
+        if not synthetic_data.requires_grad:
+            synthetic_data.requires_grad_(True)
 
-        optimizer_img = torch.optim.SGD([synthetic_data], lr=self.synthetic_lr, momentum=0.5)
+        n_synthetic    = synthetic_data.shape[0]
+        optimizer_img  = torch.optim.SGD([synthetic_data], lr=self.synthetic_lr, momentum=0.5)
 
         best_synthetic = synthetic_data.detach().clone()
         best_val_mse   = float('inf')
