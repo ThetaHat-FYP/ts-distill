@@ -36,7 +36,7 @@ CONFIG = {
     #   PowerShell: $env:TS_DISTILL_CSV_PATH = "C:\\Users\\piyum\\Downloads\\my_file.csv"
     #   PowerShell: $env:TS_DISTILL_CSV_ENCODING = "cp1252"  # optional
     #   Then run:   python example/walking_skeleton/run_cycle.py
-    'csv_path': os.getenv('TS_DISTILL_CSV_PATH', "C:/Users/piyum/Downloads/archive/cleaned_carrot_prices_for_ML.csv"),
+    'csv_path': os.getenv('TS_DISTILL_CSV_PATH', "C:/Users/piyum/Downloads/exchange_rate.csv"),
     'csv_encoding': os.getenv('TS_DISTILL_CSV_ENCODING', ''),
     'n_train_samples': 15000,
     'n_test_samples': 3000,
@@ -142,19 +142,19 @@ def main():
     print("3. Applying windowing...")
 
     # Option A: Fixed windowing (default)
-    # windowing = FixedWindowing(
-    #     window_size=CONFIG['window_size'],
-    #     stride=CONFIG['stride']
-    # )
+    windowing = FixedWindowing(
+        window_size=CONFIG['window_size'],
+        stride=CONFIG['stride']
+    )
 
     # Option B: Adaptive windowing (ADWIN / River)
-    windowing = ADWINWindowing(
-        window_size=CONFIG['window_size'],
-        stride=CONFIG['stride'],
-        delta=float(os.getenv('TS_DISTILL_ADWIN_DELTA', '0.002')),
-        warmup=int(os.getenv('TS_DISTILL_ADWIN_WARMUP', '0')),
-        reduction=os.getenv('TS_DISTILL_ADWIN_REDUCTION', 'mean'),
-    )
+    # windowing = ADWINWindowing(
+    #     window_size=CONFIG['window_size'],
+    #     stride=CONFIG['stride'],
+    #     delta=float(os.getenv('TS_DISTILL_ADWIN_DELTA', '0.002')),
+    #     warmup=int(os.getenv('TS_DISTILL_ADWIN_WARMUP', '0')),
+    #     reduction=os.getenv('TS_DISTILL_ADWIN_REDUCTION', 'mean'),
+    # )
 
     train_data, _ = windowing.create_windows(train_data)
     test_data, _ = windowing.create_windows(test_data)
