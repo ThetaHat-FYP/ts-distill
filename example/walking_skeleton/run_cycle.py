@@ -331,37 +331,37 @@ def main():
     real_metrics      = evaluator.test_on_real(real_model, test_data.to(device))
     synthetic_metrics = evaluator.test_on_real(syn_model,  test_data.to(device))
 
-    print("\n[4/4b] Hybrid Evaluation...")
+    # print("\n[4/4b] Hybrid Evaluation...")
 
-    hybrid_evaluator = BaseHybridEvaluator(
-        anchor_selector=RandomAnchorSelector(),
-        seq_len=CONFIG['seq_len'],
-        batch_size=CONFIG['batch_size'],
-        device=device
-    )
+    # hybrid_evaluator = BaseHybridEvaluator(
+    #     anchor_selector=RandomAnchorSelector(),
+    #     seq_len=CONFIG['seq_len'],
+    #     batch_size=CONFIG['batch_size'],
+    #     device=device
+    # )
 
-    hybrid_results = hybrid_evaluator.evaluate_mixing(
-        synthetic_data=synthetic_sequence,
-        real_train_data=raw_train_data,
-        real_test_loader=TorchDataLoader(
-            test_data,
-            batch_size=CONFIG['eval_batch_fulldata']
-        ),
-        model_fn=make_model,
-        window_size=CONFIG['window_size'],
-        mixing_ratios=(0.1, 0.2, 0.5)
-    )
+    # hybrid_results = hybrid_evaluator.evaluate_mixing(
+    #     synthetic_data=synthetic_sequence,
+    #     real_train_data=raw_train_data,
+    #     real_test_loader=TorchDataLoader(
+    #         test_data,
+    #         batch_size=CONFIG['eval_batch_fulldata']
+    #     ),
+    #     model_fn=make_model,
+    #     window_size=CONFIG['window_size'],
+    #     mixing_ratios=(0.1, 0.2, 0.5)
+    # )
 
-    print("\n" + "=" * 60)
-    print("Hybrid Evaluation (MSE vs Real Data Ratio)")
-    print("=" * 60)
+    # print("\n" + "=" * 60)
+    # print("Hybrid Evaluation (MSE vs Real Data Ratio)")
+    # print("=" * 60)
 
-    for ratio, metrics in hybrid_results.items():
-        percent = ratio.replace("hybrid_", "")
-        print(f"Real Data {percent:>3}%  →  MSE: {metrics['MSE']:.6f}")
+    # for ratio, metrics in hybrid_results.items():
+    #     percent = ratio.replace("hybrid_", "")
+    #     print(f"Real Data {percent:>3}%  →  MSE: {metrics['MSE']:.6f}")
 
-    print("=" * 60)
-    hybrid_evaluator.plot_hybrid_results(hybrid_results)
+    # print("=" * 60)
+    # hybrid_evaluator.plot_hybrid_results(hybrid_results)
 
     print("\nResults:")
     print("Real MSE:", real_metrics['MSE'])
