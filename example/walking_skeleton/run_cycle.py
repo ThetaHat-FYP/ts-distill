@@ -55,6 +55,9 @@ from ts_distill.trajectory.matcher.mse_matcher import MSEMatcher
 # ── Framework — evaluation ────────────────────────────────────────────────────
 from ts_distill.evaluation.evaluation import Evaluator
 
+from ts_distill.evaluation.hybrid_evaluation.hybrid import BaseHybridEvaluator
+from ts_distill.evaluation.hybrid_evaluation.hybrid import RandomAnchorSelector
+
 
 # =============================================================================
 # CONFIG — edit this section to run different experiments
@@ -64,7 +67,7 @@ CONFIG = {
     # ── Pipeline selectors ───────────────────────────────────────────────────
     # Switch 'active_model'   to try a different architecture.
     # Switch 'active_dataset' to run on a different ETT variant.
-    'active_model':   'DLinear',
+    'active_model':   'DLinear',  # 'DLinear', 'LSTM', 'MLP', 'CNN'
     'active_dataset': 'ETTh1',
 
     # ── Forecasting dimensions ───────────────────────────────────────────────
@@ -113,11 +116,12 @@ CONFIG = {
     # ── Model-specific kwargs (passed to create_model) ────────────────────────
     # Add any constructor keyword arguments your chosen model needs here.
     'models': {
-        'DLinear': {'individual': False},
-        'LSTM':    {'hidden_dim': 16, 'num_layers': 1},
-        'MLP':     {},
-        'CNN':     {},
-    },
+    'DLinear': {'individual': False},
+    'LSTM':    {'hidden_dim': 16, 'num_layer': 1},
+    'MLP':     {},
+    'CNN':     {},
+
+},
 
     # ── Expert training ───────────────────────────────────────────────────────
     'expert_epochs':   80,    # Total SGD epochs for the expert trajectory
@@ -333,29 +337,42 @@ def main():
     real_metrics      = evaluator.test_on_real(real_model, test_data.to(device))
     synthetic_metrics = evaluator.test_on_real(syn_model,  test_data.to(device))
 
-    performance_ratio     = (synthetic_metrics['MSE'] / real_metrics['MSE']) * 100
-    performance_retention = (real_metrics['MSE'] / synthetic_metrics['MSE']) * 100
+    # print("\n[4/4b] Hybrid Evaluation...")
 
-    print("\n" + "=" * 70)
-    print("Results")
-    print("=" * 70)
-    print(f"   Real-data MSE:      {real_metrics['MSE']:.6f}")
-    print(f"   Synthetic-data MSE: {synthetic_metrics['MSE']:.6f}")
-    print(f"   Error ratio:        {synthetic_metrics['MSE'] / real_metrics['MSE']:.2f}x")
-    print(f"   Performance kept:   {performance_retention:.1f}%")
-    print(f"   Compression:        {n_synthetic}/{train_data.shape[0]} windows "
-          f"({n_synthetic / train_data.shape[0] * 100:.2f}%)")
-    print("=" * 70)
-    print("Pipeline complete.\n")
+    # hybrid_evaluator = BaseHybridEvaluator(
+    #     anchor_selector=RandomAnchorSelector(),
+    #     seq_len=CONFIG['seq_len'],
+    #     batch_size=CONFIG['batch_size'],
+    #     device=device
+    # )
 
-    return {
-        'train_data':        train_data,
-        'synthetic_data':    synthetic_sequence,
-        'real_mse':          real_metrics['MSE'],
-        'synthetic_mse':     synthetic_metrics['MSE'],
-        'performance_ratio': performance_ratio,
-    }
+    # hybrid_results = hybrid_evaluator.evaluate_mixing(
+    #     synthetic_data=synthetic_sequence,
+    #     real_train_data=raw_train_data,
+    #     real_test_loader=TorchDataLoader(
+    #         test_data,
+    #         batch_size=CONFIG['eval_batch_fulldata']
+    #     ),
+    #     model_fn=make_model,
+    #     window_size=CONFIG['window_size'],
+    #     mixing_ratios=(0.1, 0.2, 0.5)
+    # )
+
+    # print("\n" + "=" * 60)
+    # print("Hybrid Evaluation (MSE vs Real Data Ratio)")
+    # print("=" * 60)
+
+    # for ratio, metrics in hybrid_results.items():
+    #     percent = ratio.replace("hybrid_", "")
+    #     print(f"Real Data {percent:>3}%  →  MSE: {metrics['MSE']:.6f}")
+
+    # print("=" * 60)
+    # hybrid_evaluator.plot_hybrid_results(hybrid_results)
+
+    print("\nResults:")
+    print("Real MSE:", real_metrics['MSE'])
+    print("Synthetic MSE:", synthetic_metrics['MSE'])
 
 
 if __name__ == "__main__":
-    results = main()
+    main()
