@@ -29,6 +29,8 @@ import pandas as pd
 import torch
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader as TorchDataLoader
+from ts_distill.distillation_core.initializer.geommetry_sequence_initializer import GeometrySequenceInitializer
+from ts_distill.distillation_core.initializer.uncertainty_sequence_initializer import UncertaintySampleInitializer
 
 # ── Make the project root importable (needed when running as a plain script) ──
 sys.path.append(str(Path(__file__).parent.parent.parent))
@@ -42,7 +44,7 @@ from ts_distill.models.factory import create_model
 
 # ── Framework — distillation ──────────────────────────────────────────────────
 from ts_distill.distillation_core.distillation_algorithm.mtt import MTTDistiller
-from ts_distill.distillation_core.initializer.real_sample_initializer import RealSampleInitializer
+from ts_distill.distillation_core.initializer.random_sample_initializer import RandomSampleInitializer
 
 # ── Framework — training infrastructure ──────────────────────────────────────
 from ts_distill.trainer.trainer.trainer import Trainer
@@ -65,7 +67,7 @@ CONFIG = {
     # Switch 'active_model'   to try a different architecture.
     # Switch 'active_dataset' to run on a different ETT variant.
     'active_model':   'DLinear',
-    'active_dataset': 'ETTh1',
+    'active_dataset': 'General',
 
     # ── Forecasting dimensions ───────────────────────────────────────────────
     'in_features': 7,    # Number of multivariate channels in the dataset
@@ -103,7 +105,7 @@ CONFIG = {
             'border2s': [12 * 30 * 96, 12 * 30 * 96 + 4 * 30 * 96, 12 * 30 * 96 + 8 * 30 * 96],
         },
         'General': {
-            'csv_path':    'example/custom_dataset.csv',
+            'csv_path':    'example/electricity.csv',
             'split_mode':  'ratios',
             'train_ratio': 0.6,
             'val_ratio':   0.2,
@@ -257,9 +259,13 @@ def main():
     # --- Initialise the synthetic sequence -----------------------------------
     # Create the initializer once so the same instance is both used to produce
     # the starting tensor AND stored inside the distiller for future reference.
-    initializer    = RealSampleInitializer()
+    initializer    = RandomSampleInitializer()
     synthetic_init = initializer.initialize_sequence(raw_train_data, n_synthetic)
-
+    # initializer    = GeometrySequenceInitializer()
+    # synthetic_init = initializer.initialize_sequence(raw_train_data, n_synthetic)
+    # initializer = UncertaintySampleInitializer()
+    # synthetic_init = initializer.initialize_sequence(raw_train_data, n_synthetic)
+    
     # --- Build the distiller -------------------------------------------------
     distiller = MTTDistiller(
         initializer           = initializer,
@@ -290,6 +296,10 @@ def main():
     # Step 4 — Evaluate: real-data model vs. synthetic-data model
     # ─────────────────────────────────────────────────────────────────────────
     print("\n[4/4] Evaluating...")
+
+    # Reset random seed to ensure the real-data model baseline is identical 
+    # regardless of how many random numbers were consumed in Step 3.
+    torch.manual_seed(42)
 
     # -- 4a. Train on full real data (with early stopping on the val set) -----
     real_model   = make_model()
