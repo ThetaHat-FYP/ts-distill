@@ -1,5 +1,5 @@
 """
-Real-Sample Initializer
+Random-Sample Initializer
 ------------------------
 Initialises synthetic data from real training data.  Provides two strategies
 depending on whether the distillation algorithm works with independent windows
@@ -19,11 +19,12 @@ better starting point and typically speeds up convergence.
 """
 
 import torch
+import torch.fft
 
 from ts_distill.distillation_core.initializer.base import BaseInitializer
 
 
-class RealSampleInitializer(BaseInitializer):
+class RandomSampleInitializer(BaseInitializer):
     """
     Initialise synthetic data by sampling from real training data.
 
@@ -34,7 +35,7 @@ class RealSampleInitializer(BaseInitializer):
     def initialize(
         self,
         shape: tuple,
-        real_data_reference: torch.Tensor = None,
+        random_data_reference: torch.Tensor = None,
     ) -> torch.Tensor:
         """
         Window-based initialisation for algorithms like FRePO and CondTSF.
@@ -46,21 +47,21 @@ class RealSampleInitializer(BaseInitializer):
         Args:
             shape (tuple):                Target shape:
                                           (n_windows, window_size, n_features).
-            real_data_reference (Tensor): Windowed real data to sample from,
-                                          shape (N, window_size, n_features).
-                                          Pass None to use random noise.
+            random_data_reference (Tensor): Windowed random data to sample from,
+                                              shape (N, window_size, n_features).
+                                              Pass None to use random noise.
 
         Returns:
             Tensor of shape `shape` with requires_grad=True.
         """
-        if real_data_reference is None:
+        if random_data_reference is None:
             # Small scale keeps early gradients stable when there is no
             # real-data reference to warm-start from.
             data = torch.randn(shape) * 0.1
         else:
             n_samples = shape[0]
-            indices   = torch.randint(0, len(real_data_reference), (n_samples,))
-            data      = real_data_reference[indices].clone()
+            indices   = torch.randint(0, len(random_data_reference), (n_samples,))
+            data      = random_data_reference[indices].clone()
 
         data.requires_grad_(True)
         return data
@@ -101,8 +102,11 @@ class RealSampleInitializer(BaseInitializer):
         synthetic_seq = raw_train_data[start_idx : start_idx + n_synthetic].clone()
         synthetic_seq.requires_grad_(True)
 
-        print(f"   Synthetic sequence initialised from real data "
+        print(f"   Synthetic sequence initialised from random data "
               f"(rows {start_idx}–{start_idx + n_synthetic - 1}), "
               f"shape {tuple(synthetic_seq.shape)}")
 
         return synthetic_seq
+    
+
+    
