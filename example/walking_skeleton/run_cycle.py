@@ -67,7 +67,7 @@ CONFIG = {
     # Switch 'active_model'   to try a different architecture.
     # Switch 'active_dataset' to run on a different ETT variant.
     'active_model':   'DLinear',
-    'active_dataset': 'ETTm1',
+    'active_dataset': 'ETTh1',
 
     # ── Forecasting dimensions ───────────────────────────────────────────────
     'in_features': 7,    # Number of multivariate channels in the dataset
