@@ -64,8 +64,6 @@ from ts_distill.evaluation.evaluation import Evaluator
 
 CONFIG = {
     # ── Pipeline selectors ───────────────────────────────────────────────────
-    # Switch 'active_model'   to try a different architecture.
-    # Switch 'active_dataset' to run on a different ETT variant.
     'active_model':   'DLinear',
     'active_dataset': 'ETTh1',
 
