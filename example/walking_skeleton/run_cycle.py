@@ -67,7 +67,7 @@ CONFIG = {
     # Switch 'active_model'   to try a different architecture.
     # Switch 'active_dataset' to run on a different ETT variant.
     'active_model':   'DLinear',
-    'active_dataset': 'General',
+    'active_dataset': 'ETTm1',
 
     # ── Forecasting dimensions ───────────────────────────────────────────────
     'in_features': 7,    # Number of multivariate channels in the dataset
@@ -116,7 +116,7 @@ CONFIG = {
     # Add any constructor keyword arguments your chosen model needs here.
     'models': {
         'DLinear': {'individual': False},
-        'LSTM':    {'hidden_dim': 16, 'num_layers': 1},
+        'LSTM':    {'hidden_dim': 16, 'num_layer': 1},
         'MLP':     {},
         'CNN':     {},
     },
