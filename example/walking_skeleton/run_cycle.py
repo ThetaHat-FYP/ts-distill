@@ -77,20 +77,20 @@ CONFIG = {
     # ratios:            proportional splits for custom datasets.
     'datasets': {
         'ETTh1': {
-            'csv_path':   'example/ETTh1.csv',
+            'csv_path':   'D:/Final year project/ts-distill/example/ETTh1.csv',
             'split_mode': 'benchmark_borders',
             # Hourly data — 12 months train, 4 months val, 4 months test
             'border1s': [0, 12 * 30 * 24 - 96, 12 * 30 * 24 + 4 * 30 * 24 - 96],
             'border2s': [12 * 30 * 24, 12 * 30 * 24 + 4 * 30 * 24, 12 * 30 * 24 + 8 * 30 * 24],
         },
         'ETTh2': {
-            'csv_path':   'example/ETTh2.csv',
+            'csv_path':   'D:/Final year project/ts-distill/example/ETTh2.csv',
             'split_mode': 'benchmark_borders',
             'border1s': [0, 12 * 30 * 24 - 96, 12 * 30 * 24 + 4 * 30 * 24 - 96],
             'border2s': [12 * 30 * 24, 12 * 30 * 24 + 4 * 30 * 24, 12 * 30 * 24 + 8 * 30 * 24],
         },
         'ETTm1': {
-            'csv_path':   'example/ETTm1.csv',
+            'csv_path':   'D:/Final year project/ts-distill/example/ETTm1.csv',
             'split_mode': 'benchmark_borders',
             # 15-minute data — multiply by 96 instead of 24
             'border1s': [0, 12 * 30 * 96 - 96, 12 * 30 * 96 + 4 * 30 * 96 - 96],
@@ -114,14 +114,14 @@ CONFIG = {
     # Add any constructor keyword arguments your chosen model needs here.
     'models': {
         'DLinear': {'individual': False},
-        'LSTM':    {'hidden_dim': 16, 'num_layers': 1},
+        'LSTM':    {'hidden_dim': 16, 'num_layer': 1},
         'MLP':     {},
         'CNN':     {},
     },
 
     # ── Expert training ───────────────────────────────────────────────────────
-    'expert_epochs':   80,    # Total SGD epochs for the expert trajectory
-    'expert_lr':       0.01,
+    'expert_epochs':   100,    # Total SGD epochs for the expert trajectory
+    'expert_lr':       0.015,
     'expert_momentum': 0.9,
 
     # ── Distillation loop ─────────────────────────────────────────────────────
@@ -132,7 +132,7 @@ CONFIG = {
     'student_steps':           20,  # Inner-loop gradient steps (matches HDT paper)
     'snapshot_student_steps':  50,  # Steps used to train the temp validation student
     'batch_size':              64,
-    'trajectory_gap':           5,  # Step gap when sampling expert checkpoint pairs
+    'trajectory_gap':           1,  # Step gap when sampling expert checkpoint pairs
 
     # ── Evaluation ────────────────────────────────────────────────────────────
     'eval_epochs_fulldata':   10,   # Epochs to train the real-data evaluation model
@@ -233,14 +233,28 @@ def main():
     # MiniBatchLoader is a lightweight in-memory loader — no PyTorch Dataset needed.
     expert_loader = MiniBatchLoader(train_data, batch_size=CONFIG['batch_size'])
 
+    val_loader = MiniBatchLoader(val_data, batch_size=CONFIG['batch_size'])
     # Pass recorder and printer as callbacks — they hook into fit() automatically.
     expert_trainer.fit(
         dataloader = expert_loader,
         epochs     = CONFIG['expert_epochs'],
         callbacks  = [recorder, SimpleCallback()],
+        val_loader=val_loader
     )
 
+
     print(f"   Checkpoints recorded: {len(recorder.get_trajectory())}")
+
+    #recorder.plot_all()
+    #recorder.plot_loss_with_validation()
+    #recorder.plot_loss_and_validation()
+    optimal_epoch = recorder.find_optimal_epoch(model_type=CONFIG['active_model'])
+    recorder.plot_loss_and_validation(
+        optimal_epoch=optimal_epoch,
+        model_type=CONFIG['active_model'],
+        smooth_window=10   # can tune this per model
+    )
+
 
     # ─────────────────────────────────────────────────────────────────────────
     # Step 3 — Distil a compact synthetic sequence using MTT
@@ -277,8 +291,7 @@ def main():
         n_synthetic     = n_synthetic,
         val_data        = val_data,
     )
-
-    print(f"   Compressed: {len(raw_train_data)} timesteps → {n_synthetic} timesteps")
+    print(f"   Compressed: {len(raw_train_data)} timesteps -> {n_synthetic} timesteps")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Step 4 — Evaluate: real-data model vs. synthetic-data model

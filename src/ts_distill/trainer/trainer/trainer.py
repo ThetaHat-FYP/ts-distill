@@ -57,42 +57,26 @@ class Trainer(BaseTrainer):
         return total_loss / max(n_batches, 1)
 
     def fit(self, dataloader, epochs: int, callbacks=None, val_loader=None, patience: int = 3):
-        """
-        Args:
-            val_loader: If provided, evaluates after every epoch and applies early stopping.
-            patience:   Number of epochs without val improvement before stopping.
-                        Best weights are restored when training ends (by early stop or epoch limit).
-        """
         if callbacks is None:
             callbacks = []
 
         for callback in callbacks:
             callback.on_train_begin(self.model)
 
-        best_val_mse = float('inf')
-        no_improve   = 0
-        best_weights = None
-
         for epoch in range(epochs):
             avg_loss = self.train_epoch(dataloader)
 
-            for callback in callbacks:
-                callback.on_epoch_end(self.model, epoch, avg_loss)
-
+            val_mse = None
             if val_loader is not None:
                 val_mse = self.eval_epoch(val_loader)
-                if val_mse < best_val_mse:
-                    best_val_mse = val_mse
-                    no_improve   = 0
-                    best_weights = copy.deepcopy(self.model.state_dict())
-                else:
-                    no_improve += 1
-                    if no_improve >= patience:
-                        print(f"   Early stopping at epoch {epoch + 1} — val MSE: {val_mse:.6f} (patience={patience})")
-                        break
 
-        if best_weights is not None:
-            self.model.load_state_dict(best_weights)
+            for callback in callbacks:
+                callback.on_epoch_end(
+                    self.model,
+                    epoch,
+                    avg_loss,
+                    val_loss=val_mse
+                )
 
         for callback in callbacks:
             callback.on_train_end(self.model)

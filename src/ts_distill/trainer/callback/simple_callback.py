@@ -28,9 +28,9 @@ class SimpleCallback(BaseCallback):
     def on_train_begin(self, model, **kwargs):
         print("   Training started...")
 
-    def on_epoch_end(self, model, epoch: int, loss: float, **kwargs):
-        if (epoch + 1) % self.print_every == 0:
-            print(f"   Epoch {epoch + 1:>4} | Loss: {loss:.6f}")
+    def on_epoch_end(self, model, epoch: int, loss: float, val_loss: float = None, **kwargs):
+        val_str = f" | Val Loss: {val_loss:.6f}" if val_loss is not None else ""
+        print(f"Epoch {epoch + 1:4d} | Loss: {loss:.6f}{val_str}")
 
     def on_train_end(self, model, **kwargs):
         print("   Training complete.")
