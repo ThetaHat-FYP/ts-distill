@@ -139,13 +139,13 @@ CONFIG = {
     'trajectory_gap':           5,  # Step gap when sampling expert checkpoint pairs
 
     # ── Evaluation ────────────────────────────────────────────────────────────
-    'eval_epochs_fulldata':   10,   # Epochs to train the real-data evaluation model
-    'eval_lr_fulldata':     0.001,
-    'eval_batch_fulldata':     32,
-    'early_stop_patience':      3,  # Val epochs without improvement → stop early
-    'eval_epochs_synthetic':  300,  # Epochs to train the synthetic-data evaluation model
-    'eval_lr_synthetic':    0.001,
-    'eval_batch_synthetic':    64,
+    # Both real and synthetic evaluation models use the same protocol:
+    # train up to eval_max_epochs with early stopping on the real val set.
+    # This ensures a fair comparison (both converge under the same criterion).
+    'eval_max_epochs':    300,   # Hard cap; early stopping fires well before this
+    'eval_lr':          0.001,
+    'eval_batch_size':     64,
+    'early_stop_patience': 10,   # Val epochs without improvement → restore best weights
 }
 
 # Derived constant — total timesteps per sliding window
@@ -307,41 +307,46 @@ def main():
     real_model   = make_model()
     real_trainer = Trainer(
         model     = real_model,
-        optimizer = torch.optim.Adam(real_model.parameters(), lr=CONFIG['eval_lr_fulldata']),
+        optimizer = torch.optim.Adam(real_model.parameters(), lr=CONFIG['eval_lr']),
         criterion = torch.nn.MSELoss(),
         device    = device,
         seq_len   = CONFIG['seq_len'],
     )
-    real_loader = TorchDataLoader(train_data, batch_size=CONFIG['eval_batch_fulldata'], shuffle=True)
-    val_loader  = TorchDataLoader(val_data,   batch_size=CONFIG['eval_batch_fulldata'], shuffle=False)
+    real_loader = TorchDataLoader(train_data, batch_size=CONFIG['eval_batch_size'], shuffle=True)
 
     real_trainer.fit(
         dataloader = real_loader,
-        epochs     = CONFIG['eval_epochs_fulldata'],
-        val_loader = val_loader,
+        epochs     = CONFIG['eval_max_epochs'],
+        val_loader = eval_val_loader,
         patience   = CONFIG['early_stop_patience'],
     )
 
-    # -- 4b. Train on distilled synthetic data --------------------------------
-    # Convert the 1-D synthetic sequence into sliding windows first.
+    # -- 4b. Train on distilled synthetic data (early stopping on real val set)
+    # Converting the 1-D synthetic sequence into sliding windows first.
     syn_windows = torch.tensor(
         make_windows(synthetic_sequence.cpu().numpy(), CONFIG['window_size']),
         dtype=torch.float32,
     )
 
+    torch.manual_seed(1)
     syn_model   = make_model()
     syn_trainer = Trainer(
         model     = syn_model,
-        optimizer = torch.optim.Adam(syn_model.parameters(), lr=CONFIG['eval_lr_synthetic']),
+        optimizer = torch.optim.Adam(syn_model.parameters(), lr=CONFIG['eval_lr']),
         criterion = torch.nn.MSELoss(),
         device    = device,
         seq_len   = CONFIG['seq_len'],
     )
-    syn_loader = TorchDataLoader(syn_windows, batch_size=CONFIG['eval_batch_synthetic'], shuffle=True)
-    syn_trainer.fit(syn_loader, epochs=CONFIG['eval_epochs_synthetic'])
+    syn_loader = TorchDataLoader(syn_windows, batch_size=CONFIG['eval_batch_size'], shuffle=True)
+    syn_trainer.fit(
+        dataloader = syn_loader,
+        epochs     = CONFIG['eval_max_epochs'],
+        val_loader = eval_val_loader,
+        patience   = CONFIG['early_stop_patience'],
+    )
 
     # -- 4c. Score both models on the real held-out test set ------------------
-    evaluator         = Evaluator(seq_len=CONFIG['seq_len'], batch_size=CONFIG['eval_batch_fulldata'])
+    evaluator         = Evaluator(seq_len=CONFIG['seq_len'], batch_size=CONFIG['eval_batch_size'])
     real_metrics      = evaluator.test_on_real(real_model, test_data.to(device))
     synthetic_metrics = evaluator.test_on_real(syn_model,  test_data.to(device))
 
