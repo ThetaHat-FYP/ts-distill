@@ -65,7 +65,7 @@ from ts_distill.models.factory import create_model
 
 # ── Framework — distillation ──────────────────────────────────────────────────
 from ts_distill.distillation_core.distillation_algorithm.mtt import MTTDistiller
-from ts_distill.distillation_core.initializer.real_sample_initializer import RealSampleInitializer
+from ts_distill.distillation_core.initializer.random_sample_initializer import RandomSampleInitializer
 
 # ── Framework — training ──────────────────────────────────────────────────────
 from ts_distill.trainer.trainer.trainer import Trainer
@@ -80,6 +80,12 @@ from ts_distill.evaluation.evaluation import Evaluator
 
 # ── Framework — temporal metrics (new module) ─────────────────────────────────
 from ts_distill.metrics.aggregator import MetricAggregator
+
+# ── Framework — hybrid mixing evaluation ──────────────────────────────────────
+from ts_distill.evaluation.hybrid_evaluation.hybrid import (
+    BaseHybridEvaluator,
+    RandomAnchorSelector,
+)
 
 
 # =============================================================================
@@ -96,6 +102,16 @@ ACTIVE_MODELS = ['DLinear', 'LSTM', 'MLP', 'CNN']
 # Distillation method label written to the result tables.
 # Update this when you add temporal-aware losses in Stage 4.
 DISTILLATION_METHOD = 'MTT'
+
+# Set False to skip temporal metric computation and CSV saving.
+# Useful for quick sanity checks that don't need statsmodels.
+COMPUTE_METRICS = False
+
+# Set True to run the hybrid mixing evaluation: trains a model on a mixture of
+# synthetic + real data at each ratio in HYBRID_MIXING_RATIOS and records MSE.
+# Results are saved to results/metrics_hybrid.csv regardless of COMPUTE_METRICS.
+COMPUTE_HYBRID_MIXING = False
+HYBRID_MIXING_RATIOS  = (0.1, 0.2, 0.5)  # fractions of real data to mix in
 
 # =============================================================================
 # DATASET CONFIGURATION
@@ -238,6 +254,22 @@ DISTILL_CONFIG = {
 # PIPELINE — parameterised version of run_cycle.py::main()
 # =============================================================================
 
+def _print_run_cycle_summary(
+    real_mse:     float,
+    transfer_mse: float,
+    n_synthetic:  int,
+    n_real_win:   int,
+) -> None:
+    """Print the same per-run summary block that run_cycle.py produces."""
+    perf_retention = (real_mse / transfer_mse) * 100
+    print(f"   Real-data MSE:      {real_mse:.6f}")
+    print(f"   Synthetic-data MSE: {transfer_mse:.6f}")
+    print(f"   Error ratio:        {transfer_mse / real_mse:.2f}x")
+    print(f"   Performance kept:   {perf_retention:.1f}%")
+    print(f"   Compression:        {n_synthetic}/{n_real_win} windows "
+          f"({n_synthetic / n_real_win * 100:.2f}%)")
+
+
 def _make_model_factory(model_name: str, cfg: dict):
     """Return a zero-argument callable that creates a fresh model instance."""
     def factory():
@@ -252,23 +284,28 @@ def _make_model_factory(model_name: str, cfg: dict):
 
 
 def run_single_experiment(
-    dataset_name: str,
-    model_name:   str,
-    cfg:          dict,
+    dataset_name:    str,
+    model_name:            str,
+    cfg:                   dict,
+    compute_metrics:       bool = True,
+    compute_hybrid_mixing: bool = False,
 ) -> tuple:
     """
-    Run the full MTT pipeline for one (dataset, model) combination and return
-    the metric rows ready to be appended to the result CSV files.
+    Run the full MTT pipeline for one (dataset, model) combination.
 
     Args:
-        dataset_name (str): Key in DATASET_CONFIGS, e.g. 'ETTh1'.
-        model_name   (str): Key in MODEL_CONFIGS,   e.g. 'DLinear'.
-        cfg          (dict): Merged distillation/eval hyperparameters.
+        dataset_name          (str):  Key in DATASET_CONFIGS, e.g. 'ETTh1'.
+        model_name            (str):  Key in MODEL_CONFIGS,   e.g. 'DLinear'.
+        cfg                   (dict): Merged distillation/eval hyperparameters.
+        compute_metrics       (bool): When False, skip temporal metrics.
+        compute_hybrid_mixing (bool): When True, run hybrid mixing evaluation across
+                                      HYBRID_MIXING_RATIOS and return results.
 
     Returns:
-        Tuple[List[Dict], Dict]: (feature_rows, main_row)
-            feature_rows — C dicts, one per channel, for the feature-wise table.
-            main_row     — one dict for the aggregate main table.
+        Tuple[List[Dict], Dict, Optional[Dict]]: (feature_rows, main_row, hybrid_row)
+            feature_rows — per-channel metric dicts (empty when compute_metrics=False).
+            main_row     — aggregate result dict.
+            hybrid_row   — {dataset, model, hybrid_<r>_mse, ...} or None.
     """
     torch.manual_seed(42)
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -338,7 +375,7 @@ def run_single_experiment(
     )
 
     # ── Step 3: Distil synthetic sequence ─────────────────────────────────────
-    initializer    = RealSampleInitializer()
+    initializer    = RandomSampleInitializer()
     synthetic_init = initializer.initialize_sequence(raw_train_data, cfg['n_synthetic'])
 
     distiller = MTTDistiller(
@@ -415,10 +452,62 @@ def run_single_experiment(
     real_mse     = real_metrics['MSE']
     transfer_mse = synthetic_metrics['MSE']
 
-    # ── Step 5: Compute temporal metrics ──────────────────────────────────────
-    # Convert to numpy — both are already normalised continuous sequences.
-    real_np = raw_train_data.detach().cpu().numpy()         # shape (T, C)
-    syn_np  = synthetic_sequence.detach().cpu().numpy()     # shape (n_synthetic, C)
+    # ── Hybrid / no-metrics summary ───────────────────────────────────────────
+    if not compute_metrics:
+        _print_run_cycle_summary(
+            real_mse     = real_mse,
+            transfer_mse = transfer_mse,
+            n_synthetic  = cfg['n_synthetic'],
+            n_real_win   = train_data.shape[0],
+        )
+
+    # ── Step 5: Hybrid mixing evaluation ─────────────────────────────────────
+    # Trains a fresh model on synthetic + real mixtures at each ratio and
+    # measures how MSE changes as the real data fraction increases.
+    hybrid_row = None
+    if compute_hybrid_mixing:
+        hybrid_evaluator = BaseHybridEvaluator(
+            anchor_selector = RandomAnchorSelector(),
+            seq_len         = seq_len,
+            batch_size      = cfg['batch_size'],
+            device          = device,
+        )
+        mixing_results = hybrid_evaluator.evaluate_mixing(
+            synthetic_data  = synthetic_sequence,
+            real_train_data = raw_train_data,
+            real_test_loader = TorchDataLoader(test_data, batch_size=cfg['eval_batch_size']),
+            model_fn        = make_model,
+            window_size     = window_size,
+            mixing_ratios   = HYBRID_MIXING_RATIOS,
+        )
+        print("\n" + "-" * 60)
+        print("Hybrid Mixing  (MSE vs real-data fraction)")
+        print("-" * 60)
+        for key, m in mixing_results.items():
+            pct = key.replace("hybrid_", "")
+            print(f"   Real {pct:>3}%  ->  MSE: {m['MSE']:.6f}")
+        print("-" * 60)
+
+        hybrid_row = {
+            'dataset':             dataset_name,
+            'model':               model_name,
+            'distillation_method': DISTILLATION_METHOD,
+            **{f"hybrid_{k.replace('hybrid_', '')}_mse": v['MSE']
+               for k, v in mixing_results.items()},
+        }
+
+    if not compute_metrics:
+        return [], {
+            'dataset':             dataset_name,
+            'model':               model_name,
+            'distillation_method': DISTILLATION_METHOD,
+            'real_mse':            real_mse,
+            'transfer_mse':        transfer_mse,
+        }, hybrid_row
+
+    # ── Step 6: Compute temporal metrics ──────────────────────────────────────
+    real_np = raw_train_data.detach().cpu().numpy()
+    syn_np  = synthetic_sequence.detach().cpu().numpy()
 
     period     = DATASET_PERIODS[dataset_name]
     aggregator = MetricAggregator(period=period, n_lags=cfg['acf_n_lags'])
@@ -433,7 +522,7 @@ def run_single_experiment(
         distillation_method = DISTILLATION_METHOD,
     )
 
-    return feature_rows, main_row
+    return feature_rows, main_row, hybrid_row
 
 
 # =============================================================================
@@ -475,6 +564,22 @@ def save_results(
         print(f"Feature table saved → {feature_path}")
 
 
+def save_hybrid_results(hybrid_rows: list, results_dir: Path) -> None:
+    """Write hybrid mixing results to metrics_hybrid.csv."""
+    if not hybrid_rows:
+        return
+    results_dir.mkdir(parents=True, exist_ok=True)
+    path = results_dir / 'metrics_hybrid.csv'
+    # Column order: id columns first, then ratio MSE columns in ratio order.
+    id_cols    = ['dataset', 'model', 'distillation_method']
+    ratio_cols = sorted(
+        [c for c in hybrid_rows[0] if c not in id_cols],
+        key=lambda c: int(c.split('_')[1]),
+    )
+    pd.DataFrame(hybrid_rows)[id_cols + ratio_cols].to_csv(path, index=False)
+    print(f"Hybrid table saved  → {path}")
+
+
 # =============================================================================
 # ENTRY POINT
 # =============================================================================
@@ -491,6 +596,7 @@ def main() -> None:
     results_dir  = Path(__file__).parent / 'results'
     all_main     = []
     all_features = []
+    all_hybrid   = []
 
     total = len(ACTIVE_DATASETS) * len(ACTIVE_MODELS)
     done  = 0
@@ -498,34 +604,41 @@ def main() -> None:
     for dataset_name in ACTIVE_DATASETS:
         for model_name in ACTIVE_MODELS:
             done += 1
-            header = f"[{done}/{total}]  {dataset_name}  ×  {model_name}"
+            header = f"[{done}/{total}]  {dataset_name}  x  {model_name}"
             print(f"\n{'=' * 70}")
             print(header)
             print(f"{'=' * 70}")
 
             try:
-                feature_rows, main_row = run_single_experiment(
-                    dataset_name = dataset_name,
-                    model_name   = model_name,
-                    cfg          = DISTILL_CONFIG,
+                feature_rows, main_row, hybrid_row = run_single_experiment(
+                    dataset_name          = dataset_name,
+                    model_name            = model_name,
+                    cfg                   = DISTILL_CONFIG,
+                    compute_metrics       = COMPUTE_METRICS,
+                    compute_hybrid_mixing = COMPUTE_HYBRID_MIXING,
                 )
                 all_main.append(main_row)
                 all_features.extend(feature_rows)
+                if hybrid_row is not None:
+                    all_hybrid.append(hybrid_row)
 
-                # Print a brief summary for this combination.
-                print(
-                    f"\n  real_mse={main_row['real_mse']:.6f}  "
-                    f"transfer_mse={main_row['transfer_mse']:.6f}  "
-                    f"acf_short={main_row['acf_short']:.4f}  "
-                    f"acf_long={main_row['acf_long']:.4f}"
-                )
+                if COMPUTE_METRICS:
+                    print(
+                        f"\n  real_mse={main_row['real_mse']:.6f}  "
+                        f"transfer_mse={main_row['transfer_mse']:.6f}  "
+                        f"acf_short={main_row['acf_short']:.4f}  "
+                        f"acf_long={main_row['acf_long']:.4f}"
+                    )
 
             except Exception as exc:
-                print(f"\n  [SKIP] {dataset_name} × {model_name} failed: {exc}")
+                print(f"\n  [SKIP] {dataset_name} x {model_name} failed: {exc}")
                 continue
 
-    # Write everything collected so far (even if some combinations were skipped).
-    save_results(all_main, all_features, results_dir)
+    if COMPUTE_METRICS:
+        save_results(all_main, all_features, results_dir)
+    if COMPUTE_HYBRID_MIXING:
+        save_hybrid_results(all_hybrid, results_dir)
+
     print(f"\nMatrix complete. {len(all_main)}/{total} combinations succeeded.")
 
 
@@ -534,8 +647,8 @@ if __name__ == '__main__':
     # Uncomment and edit the lines below to test a single fast combination
     # before committing to the full matrix run.
     #
-    ACTIVE_DATASETS[:] = ['national_illness']
-    ACTIVE_MODELS[:]   = ['LSTM']
+    ACTIVE_DATASETS[:] = ['ETTh1']
+    ACTIVE_MODELS[:]   = ['DLinear']
     DISTILL_CONFIG['n_distill_steps'] = 300
     DISTILL_CONFIG['expert_epochs']   = 80
     DISTILL_CONFIG['eval_max_epochs'] = 50   # still uses early stopping
