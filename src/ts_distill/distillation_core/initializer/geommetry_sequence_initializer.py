@@ -2,6 +2,17 @@ import torch
 from ts_distill.distillation_core.initializer.base import BaseInitializer
 
 class GeometrySequenceInitializer(BaseInitializer):
+    def _apply_gaussian_noise(
+        self,
+        sequence: torch.Tensor,
+        noise_std: float,
+    ) -> torch.Tensor:
+        if noise_std <= 0:
+            return sequence
+
+        noise = torch.randn_like(sequence) * noise_std
+        return sequence + noise
+
     def initialize(self, shape: tuple, real_data_reference: torch.Tensor = None) -> torch.Tensor:
         raise NotImplementedError("GeometrySequenceInitializer only supports continuous sequence initialization.")
 
@@ -9,6 +20,7 @@ class GeometrySequenceInitializer(BaseInitializer):
         self,
         raw_train_data: torch.Tensor,
         n_synthetic: int,
+        noise_std: float = 0.08,
     ) -> torch.Tensor:
         """
         Geometry-based initialisation for a single sequence.
@@ -55,10 +67,13 @@ class GeometrySequenceInitializer(BaseInitializer):
 
         # Extract, clone, and prep for the optimiser
         synthetic_seq = raw_train_data[best_idx : best_idx + n_synthetic].clone()
+        synthetic_seq = self._apply_gaussian_noise(synthetic_seq, noise_std)
         synthetic_seq.requires_grad_(True)
 
-        print(f"  Geometry sequence initialised from random data (Most representative) "
-              f"(rows {best_idx}–{best_idx + n_synthetic - 1}), "
-              f"shape {tuple(synthetic_seq.shape)}")
+        print(
+            f"  Geometry sequence initialised from random data (Most representative) "
+            f"(rows {best_idx}–{best_idx + n_synthetic - 1}), "
+            f"shape {tuple(synthetic_seq.shape)}"
+        )
 
         return synthetic_seq

@@ -67,8 +67,8 @@ from ts_distill.evaluation.hybrid_evaluation.hybrid import RandomAnchorSelector
 
 CONFIG = {
     # ── Pipeline selectors ───────────────────────────────────────────────────
-    'active_model':   'DLinear',
-    'active_dataset': 'ETTh1',
+    'active_model':   'MLP',
+    'active_dataset': 'ETTm1',
 
     # ── Forecasting dimensions ───────────────────────────────────────────────
     'in_features': 7,    # Number of multivariate channels in the dataset
@@ -129,7 +129,7 @@ CONFIG = {
     'expert_momentum': 0.9,
 
     # ── Distillation loop ─────────────────────────────────────────────────────
-    'n_distill_steps':       300,  # Outer-loop iterations (matches HDT paper)
+    'n_distill_steps':        300,  # Outer-loop iterations (matches HDT paper)
     'n_synthetic':            384,  # Length of the synthetic continuous sequence
     'synthetic_lr':           0.1,  # Learning rate for the synthetic sequence tensor
     'student_lr':            0.01,  # Inner-loop student learning rate
@@ -261,10 +261,10 @@ def main():
     # --- Initialise the synthetic sequence -----------------------------------
     # Create the initializer once so the same instance is both used to produce
     # the starting tensor AND stored inside the distiller for future reference.
-    initializer    = RandomSampleInitializer()
-    synthetic_init = initializer.initialize_sequence(raw_train_data, n_synthetic)
-    # initializer    = GeometrySequenceInitializer()
+    # initializer    = RandomSampleInitializer()
     # synthetic_init = initializer.initialize_sequence(raw_train_data, n_synthetic)
+    initializer    = GeometrySequenceInitializer()
+    synthetic_init = initializer.initialize_sequence(raw_train_data, n_synthetic)
     # initializer = UncertaintySampleInitializer()
     # synthetic_init = initializer.initialize_sequence(raw_train_data, n_synthetic)
     
