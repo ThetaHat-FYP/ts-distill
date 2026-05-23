@@ -26,7 +26,7 @@ sys.path.append(str(Path(__file__).parent.parent.parent))
 # ---------------------------------------------------------------------------
 from ts_distill.trajectory.recorder.simple_recorder import SimpleRecorder          # noqa: F401
 from ts_distill.trajectory.matcher.mse_matcher import MSEMatcher                  # noqa: F401
-from ts_distill.distillation_core.initializer.real_sample_initializer import (    # noqa: F401
+from ts_distill.distillation_core.initializer.random_sample_initializer import (    # noqa: F401
     RealSampleInitializer,
 )
 from ts_distill.trainer.callback.simple_callback import SimpleCallback             # noqa: F401
