@@ -80,27 +80,27 @@ CONFIG = {
     # ratios:            proportional splits for custom datasets.
     'datasets': {
         'ETTh1': {
-            'csv_path':   'example/ETTh1.csv',
+            'csv_path':   r'D:\Final year project\ts-distill\example\ETTh1.csv',
             'split_mode': 'benchmark_borders',
             # Hourly data — 12 months train, 4 months val, 4 months test
             'border1s': [0, 12 * 30 * 24 - 96, 12 * 30 * 24 + 4 * 30 * 24 - 96],
             'border2s': [12 * 30 * 24, 12 * 30 * 24 + 4 * 30 * 24, 12 * 30 * 24 + 8 * 30 * 24],
         },
         'ETTh2': {
-            'csv_path':   'example/ETTh2.csv',
+            'csv_path':   r'D:\Final year project\ts-distill\example/ETTh2.csv',
             'split_mode': 'benchmark_borders',
             'border1s': [0, 12 * 30 * 24 - 96, 12 * 30 * 24 + 4 * 30 * 24 - 96],
             'border2s': [12 * 30 * 24, 12 * 30 * 24 + 4 * 30 * 24, 12 * 30 * 24 + 8 * 30 * 24],
         },
         'ETTm1': {
-            'csv_path':   'example/ETTm1.csv',
+            'csv_path':   r'D:\Final year project\ts-distill\example/ETTm1.csv',
             'split_mode': 'benchmark_borders',
             # 15-minute data — multiply by 96 instead of 24
             'border1s': [0, 12 * 30 * 96 - 96, 12 * 30 * 96 + 4 * 30 * 96 - 96],
             'border2s': [12 * 30 * 96, 12 * 30 * 96 + 4 * 30 * 96, 12 * 30 * 96 + 8 * 30 * 96],
         },
         'ETTm2': {
-            'csv_path':   'example/ETTm2.csv',
+            'csv_path':   r'D:\Final year project\ts-distill\example/ETTm2.csv',
             'split_mode': 'benchmark_borders',
             'border1s': [0, 12 * 30 * 96 - 96, 12 * 30 * 96 + 4 * 30 * 96 - 96],
             'border2s': [12 * 30 * 96, 12 * 30 * 96 + 4 * 30 * 96, 12 * 30 * 96 + 8 * 30 * 96],

@@ -73,6 +73,8 @@ from ts_distill.trainer.callback.simple_callback import SimpleCallback
 
 # ── Framework — trajectory ────────────────────────────────────────────────────
 from ts_distill.trajectory.recorder.simple_recorder import SimpleRecorder
+from ts_distill.trajectory.recorder.windowed_recorder import WindowedRecorder
+from ts_distill.trajectory.selector.phase_window_selector import PhaseWindowSelector
 from ts_distill.trajectory.matcher.mse_matcher import MSEMatcher
 
 # ── Framework — evaluation ────────────────────────────────────────────────────
@@ -113,6 +115,31 @@ COMPUTE_METRICS = False
 COMPUTE_HYBRID_MIXING = False
 HYBRID_MIXING_RATIOS  = (0.1, 0.2, 0.5)  # fractions of real data to mix in
 
+# Set True to run the Phase Window Experiment (Hypothesis H1, Thread 3).
+# For every (dataset × model) cell the expert is trained ONCE, then MTT
+# distillation is run six times — once per window condition below — and the
+# student MSE for each condition is written to results/phase_window.csv.
+# This is independent of the standard MTT run; both can be enabled together.
+COMPUTE_PHASE_WINDOW = False
+
+# Window definitions used when COMPUTE_PHASE_WINDOW = True.
+# Format: (label, (start_epoch, end_epoch)) or (label, None) for uniform.
+# With expert_epochs=80 and record_every=1 each window covers 16 checkpoints.
+ACTIVE_WINDOWS = [
+    ('uniform', None),         # Full trajectory — standard MTT baseline
+    ('W1', (1,  16)),          # Rapid:     large gradient steps, fast loss drop
+    ('W2', (17, 32)),          # Early-mid: slowing down, stabilising
+    ('W3', (33, 48)),          # Middle:    steady refinement, best generalisation
+    ('W4', (49, 64)),          # Late-mid:  plateau, small updates
+    ('W5', (65, 80)),          # Late:      near/post overfitting point
+]
+
+# Seeds used for the distillation runs inside run_phase_window_cell().
+# Multiple seeds let us measure within-window variance and compare it against
+# cross-window variance — the key statistical test for H1.
+# The expert is trained ONCE per cell (seed 42); only the distillation RNG varies.
+PHASE_WINDOW_SEEDS = [42, 123, 456]
+
 # =============================================================================
 # DATASET CONFIGURATION
 # Reproduced exactly from run_cycle.py so results are directly comparable.
@@ -136,33 +163,33 @@ DATASET_PERIODS = {
     'weather': 144,
 }
 
-# CSV paths are relative to the project root (where you run the script from).
+# Absolute paths — avoids working-directory issues when running from any location.
 # Split borders reproduce the published paper splits (Informer / DLinear benchmarks).
 DATASET_CONFIGS = {
     # ── ETT family (benchmark borders from Informer / DLinear papers) ─────────
     'ETTh1': {
-        'csv_path':    'example/ETTh1.csv',
+        'csv_path':    r'D:\Final year project\ts-distill\example\ETTh1.csv',
         'split_mode':  'benchmark_borders',
         'border1s':    [0, 12 * 30 * 24 - 96,       12 * 30 * 24 + 4 * 30 * 24 - 96],
         'border2s':    [12 * 30 * 24, 12 * 30 * 24 + 4 * 30 * 24, 12 * 30 * 24 + 8 * 30 * 24],
         'in_features': 7,
     },
     'ETTh2': {
-        'csv_path':    'example/ETTh2.csv',
+        'csv_path':    r'D:\Final year project\ts-distill\example\ETTh2.csv',
         'split_mode':  'benchmark_borders',
         'border1s':    [0, 12 * 30 * 24 - 96,       12 * 30 * 24 + 4 * 30 * 24 - 96],
         'border2s':    [12 * 30 * 24, 12 * 30 * 24 + 4 * 30 * 24, 12 * 30 * 24 + 8 * 30 * 24],
         'in_features': 7,
     },
     'ETTm1': {
-        'csv_path':    'example/ETTm1.csv',
+        'csv_path':    r'D:\Final year project\ts-distill\example\ETTm1.csv',
         'split_mode':  'benchmark_borders',
         'border1s':    [0, 12 * 30 * 96 - 96,       12 * 30 * 96 + 4 * 30 * 96 - 96],
         'border2s':    [12 * 30 * 96, 12 * 30 * 96 + 4 * 30 * 96, 12 * 30 * 96 + 8 * 30 * 96],
         'in_features': 7,
     },
     'ETTm2': {
-        'csv_path':    'example/ETTm2.csv',
+        'csv_path':    r'D:\Final year project\ts-distill\example\ETTm2.csv',
         'split_mode':  'benchmark_borders',
         'border1s':    [0, 12 * 30 * 96 - 96,       12 * 30 * 96 + 4 * 30 * 96 - 96],
         'border2s':    [12 * 30 * 96, 12 * 30 * 96 + 4 * 30 * 96, 12 * 30 * 96 + 8 * 30 * 96],
@@ -173,7 +200,7 @@ DATASET_CONFIGS = {
     # 70/10/20 ratio split — no standard border indices in literature.
     # Period = 5 (one trading week); seq_len/pred_len inherit global 96/96.
     'exchange_rate': {
-        'csv_path':    'example/exchange_rate.csv',
+        'csv_path':    r'D:\Final year project\ts-distill\example\exchange_rate.csv',
         'split_mode':  'ratios',
         'train_ratio': 0.7,
         'val_ratio':   0.1,
@@ -184,7 +211,7 @@ DATASET_CONFIGS = {
     # seq_len=36 overrides the global 96 — weekly data is too sparse for 96.
     # Period = 52 (annual flu season cycle).
     'national_illness': {
-        'csv_path':    'example/national_illness.csv',
+        'csv_path':    r'D:\Final year project\ts-distill\example\national_illness.csv',
         'split_mode':  'ratios',
         'train_ratio': 0.6,
         'val_ratio':   0.2,
@@ -197,7 +224,7 @@ DATASET_CONFIGS = {
     # Period = 144 (one day = 6 readings/hour × 24 hours).
     # seq_len/pred_len inherit global 96/96.
     'weather': {
-        'csv_path':    'example/weather.csv',
+        'csv_path':    r'D:\Final year project\ts-distill\example\weather.csv',
         'split_mode':  'ratios',
         'train_ratio': 0.7,
         'val_ratio':   0.1,
@@ -526,6 +553,243 @@ def run_single_experiment(
 
 
 # =============================================================================
+# PHASE WINDOW EXPERIMENT — H1 (Thread 3)
+# =============================================================================
+
+def run_phase_window_cell(
+    dataset_name: str,
+    model_name:   str,
+    cfg:          dict,
+    results_dir:  Path = None,
+) -> list:
+    """
+    Run the phase window experiment for one (dataset, model) cell.
+
+    Trains the expert model ONCE and then runs MTT distillation once per
+    window condition in ACTIVE_WINDOWS, using:
+        SimpleRecorder       — records the full weight trajectory
+        PhaseWindowSelector  — filters trajectory to the epoch window
+        WindowedRecorder     — exposes the filtered trajectory to MTTDistiller
+
+    Each (window, seed) row is flushed to CSV immediately after it completes
+    when results_dir is provided, so no data is lost if the run crashes.
+
+    Args:
+        dataset_name (str):  Key in DATASET_CONFIGS.
+        model_name   (str):  Key in MODEL_CONFIGS.
+        cfg          (dict): Distillation / evaluation hyperparameters.
+        results_dir  (Path): If provided, each row is saved to
+                             results_dir/phase_window.csv as soon as it
+                             completes (crash-safe).
+
+    Returns:
+        List of result dicts, one per (window, seed) pair.  Each dict
+        contains the columns defined in PHASE_WINDOW_COLUMNS.
+    """
+    torch.manual_seed(42)
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    # ── Resolve per-dataset overrides ────────────────────────────────────────
+    dataset_cfg = DATASET_CONFIGS[dataset_name]
+    seq_len     = dataset_cfg.get('seq_len',     cfg['seq_len'])
+    pred_len    = dataset_cfg.get('pred_len',    cfg['pred_len'])
+    in_features = dataset_cfg.get('in_features', cfg['in_features'])
+    window_size = seq_len + pred_len
+    make_model  = _make_model_factory(
+        model_name, {**cfg, 'seq_len': seq_len, 'pred_len': pred_len, 'in_features': in_features}
+    )
+
+    # ── Step 1: Load and normalise data ──────────────────────────────────────
+    csv_path = dataset_cfg['csv_path']
+    if not Path(csv_path).exists():
+        raise FileNotFoundError(f"CSV not found: '{csv_path}'")
+
+    df_raw = pd.read_csv(csv_path)
+    values = df_raw.iloc[:, 1:].values.astype(np.float32)
+
+    train_start, train_end, val_start, val_end, test_start, test_end = get_data_splits(
+        values=values, window_size=window_size, seq_len=seq_len, dataset_cfg=dataset_cfg,
+    )
+    scaler = StandardScaler()
+    scaler.fit(values[train_start:train_end])
+    data = scaler.transform(values)
+
+    train_data     = torch.tensor(make_windows(data[train_start:train_end], window_size), dtype=torch.float32)
+    val_data       = torch.tensor(make_windows(data[val_start:val_end],     window_size), dtype=torch.float32)
+    test_data      = torch.tensor(make_windows(data[test_start:test_end],   window_size), dtype=torch.float32)
+    raw_train_data = torch.tensor(data[train_start:train_end], dtype=torch.float32)
+
+    # ── Step 2: Train expert ONCE — shared across all window conditions ───────
+    print(f"   [Expert] Training SimpleRecorder trajectory (record_every=1)...")
+    recorder       = SimpleRecorder(record_every=1)
+    expert_model   = make_model()
+    expert_trainer = Trainer(
+        model     = expert_model,
+        optimizer = torch.optim.SGD(
+            expert_model.parameters(),
+            lr=cfg['expert_lr'], momentum=cfg['expert_momentum'],
+        ),
+        criterion = torch.nn.MSELoss(),
+        device    = device,
+        seq_len   = seq_len,
+    )
+    expert_loader = MiniBatchLoader(train_data, batch_size=cfg['batch_size'])
+    expert_trainer.fit(
+        dataloader = expert_loader,
+        epochs     = cfg['expert_epochs'],
+        callbacks  = [recorder, SimpleCallback()],
+    )
+    n_ckpts = len(recorder.get_trajectory())
+    print(f"   [Expert] {n_ckpts} checkpoints recorded "
+          f"(steps {recorder.get_trajectory()[0]['step']}"
+          f"-{recorder.get_trajectory()[-1]['step']})")
+
+    # ── Step 3: Real-data MSE baseline — computed once, reused for all windows
+    eval_val_loader = TorchDataLoader(val_data, batch_size=cfg['eval_batch_size'], shuffle=False)
+
+    torch.manual_seed(0)
+    real_model   = make_model()
+    real_trainer = Trainer(
+        model     = real_model,
+        optimizer = torch.optim.Adam(real_model.parameters(), lr=cfg['eval_lr']),
+        criterion = torch.nn.MSELoss(),
+        device    = device,
+        seq_len   = seq_len,
+    )
+    real_trainer.fit(
+        dataloader = TorchDataLoader(train_data, batch_size=cfg['eval_batch_size'], shuffle=True),
+        epochs     = cfg['eval_max_epochs'],
+        val_loader = eval_val_loader,
+        patience   = cfg['early_stop_patience'],
+    )
+    evaluator = Evaluator(seq_len=seq_len, batch_size=cfg['eval_batch_size'])
+    real_mse  = evaluator.test_on_real(real_model, test_data.to(device))['MSE']
+    print(f"   [Baseline] Real MSE = {real_mse:.6f}")
+
+    # ── Step 4: Loop over window conditions × seeds ───────────────────────────
+    # Multiple seeds per window give within-window variance.
+    # The expert trajectory is fixed (trained once above); only the distillation
+    # RNG varies across seeds.  This isolates the phase effect from init noise.
+    rows = []
+    for window_label, window_range in ACTIVE_WINDOWS:
+        # Build the active recorder once per window (shared across seeds)
+        if window_range is None:
+            active_recorder = recorder
+            n_win_ckpts     = n_ckpts
+            recorder_desc   = f"full trajectory ({n_ckpts} checkpoints)"
+        else:
+            start_e, end_e  = window_range
+            selector        = PhaseWindowSelector(start_epoch=start_e, end_epoch=end_e)
+            active_recorder = WindowedRecorder(source_recorder=recorder, selector=selector)
+            n_win_ckpts     = active_recorder.n_checkpoints
+            recorder_desc   = (f"PhaseWindowSelector({start_e}-{end_e}) "
+                               f"-> WindowedRecorder: {n_win_ckpts} checkpoints")
+
+        print(f"\n   [Window {window_label}]  {recorder_desc}")
+
+        if window_range is not None and n_win_ckpts < 2:
+            note = f'insufficient_checkpoints ({n_win_ckpts})'
+            print(f"   [SKIP] {note}")
+            rows.append({
+                'dataset': dataset_name, 'model': model_name,
+                'distillation_method': DISTILLATION_METHOD,
+                'window': window_label,
+                'window_start': window_range[0], 'window_end': window_range[1],
+                'sampling_strategy': f'window_{window_label}',
+                'n_pairs_available': 0, 'seed': -1,
+                'real_mse': real_mse, 'transfer_mse': float('nan'),
+                'mse_ratio': float('nan'), 'notes': note,
+            })
+            continue
+
+        n_pairs = max(0, n_win_ckpts - cfg['trajectory_gap'])
+
+        for seed in PHASE_WINDOW_SEEDS:
+            row = {
+                'dataset':             dataset_name,
+                'model':               model_name,
+                'distillation_method': DISTILLATION_METHOD,
+                'window':              window_label,
+                'window_start':        0 if window_range is None else window_range[0],
+                'window_end':          cfg['expert_epochs'] if window_range is None else window_range[1],
+                'sampling_strategy':   'uniform' if window_range is None else f'window_{window_label}',
+                'n_pairs_available':   n_pairs,
+                'seed':                seed,
+                'real_mse':            real_mse,
+                'transfer_mse':        float('nan'),
+                'mse_ratio':           float('nan'),
+                'notes':               '',
+            }
+
+            try:
+                torch.manual_seed(seed)
+                initializer    = RandomSampleInitializer()
+                synthetic_init = initializer.initialize_sequence(raw_train_data, cfg['n_synthetic'])
+
+                distiller = MTTDistiller(
+                    initializer            = initializer,
+                    matcher                = MSEMatcher(),
+                    model_factory          = make_model,
+                    expert_recorder        = active_recorder,
+                    expert_epochs          = cfg['trajectory_gap'],
+                    syn_batch_size         = cfg['batch_size'],
+                    synthetic_lr           = cfg['synthetic_lr'],
+                    student_lr             = cfg['student_lr'],
+                    student_steps          = cfg['student_steps'],
+                    snapshot_student_steps = cfg['snapshot_student_steps'],
+                    seq_len                = seq_len,
+                    pred_len               = pred_len,
+                )
+                synthetic_sequence = distiller.distill(
+                    synthetic_init = synthetic_init,
+                    n_steps        = cfg['n_distill_steps'],
+                    val_data       = val_data,
+                )
+
+                syn_windows = torch.tensor(
+                    make_windows(synthetic_sequence.cpu().numpy(), window_size), dtype=torch.float32
+                )
+                torch.manual_seed(seed + 1)
+                syn_model   = make_model()
+                syn_trainer = Trainer(
+                    model     = syn_model,
+                    optimizer = torch.optim.Adam(syn_model.parameters(), lr=cfg['eval_lr']),
+                    criterion = torch.nn.MSELoss(),
+                    device    = device,
+                    seq_len   = seq_len,
+                )
+                syn_trainer.fit(
+                    dataloader = TorchDataLoader(syn_windows, batch_size=cfg['eval_batch_size'], shuffle=True),
+                    epochs     = cfg['eval_max_epochs'],
+                    val_loader = eval_val_loader,
+                    patience   = cfg['early_stop_patience'],
+                )
+                transfer_mse = evaluator.test_on_real(syn_model, test_data.to(device))['MSE']
+                mse_ratio    = transfer_mse / real_mse if real_mse > 0 else float('nan')
+                row.update({'transfer_mse': transfer_mse, 'mse_ratio': mse_ratio})
+                print(f"     seed={seed}  real={real_mse:.6f}  "
+                      f"transfer={transfer_mse:.6f}  ratio={mse_ratio:.4f}")
+
+            except Exception as exc:
+                note = repr(exc)[:200]
+                print(f"     seed={seed}  [ERROR] {note}")
+                row['notes'] = note
+
+            rows.append(row)
+            if results_dir is not None:
+                _flush_phase_row(row, results_dir)
+
+    return rows
+
+
+PHASE_WINDOW_COLUMNS = [
+    'dataset', 'model', 'distillation_method',
+    'window', 'window_start', 'window_end', 'sampling_strategy', 'n_pairs_available',
+    'seed', 'real_mse', 'transfer_mse', 'mse_ratio', 'notes',
+]
+
+
+# =============================================================================
 # CSV I/O
 # =============================================================================
 
@@ -580,13 +844,45 @@ def save_hybrid_results(hybrid_rows: list, results_dir: Path) -> None:
     print(f"Hybrid table saved  → {path}")
 
 
+def save_phase_window_results(rows: list, results_dir: Path) -> None:
+    """
+    Append phase window experiment rows to results/phase_window.csv.
+
+    Writes the header only on first call (when the file does not yet exist),
+    so partial runs accumulate rows safely across restarts.
+
+    Args:
+        rows        (list): List of result dicts from run_phase_window_cell().
+        results_dir (Path): Directory to write into (created if absent).
+    """
+    if not rows:
+        return
+    results_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = results_dir / 'phase_window.csv'
+    write_header = not csv_path.exists()
+    pd.DataFrame(rows)[PHASE_WINDOW_COLUMNS].to_csv(
+        csv_path, mode='a', header=write_header, index=False
+    )
+    print(f"Phase window rows saved ({len(rows)}) -> {csv_path}")
+
+
+def _flush_phase_row(row: dict, results_dir: Path) -> None:
+    """Append a single phase-window result row to CSV immediately after it completes."""
+    results_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = results_dir / 'phase_window.csv'
+    write_header = not csv_path.exists()
+    pd.DataFrame([row])[PHASE_WINDOW_COLUMNS].to_csv(
+        csv_path, mode='a', header=write_header, index=False
+    )
+
+
 # =============================================================================
 # ENTRY POINT
 # =============================================================================
 
 def main() -> None:
     """
-    Loop over the full ACTIVE_DATASETS × ACTIVE_MODELS matrix, run each
+    Loop over the full ACTIVE_DATASETS x ACTIVE_MODELS matrix, run each
     combination, and collect results into both CSV files.
 
     A try/except around each combination means a single failed run (e.g. a
@@ -609,6 +905,7 @@ def main() -> None:
             print(header)
             print(f"{'=' * 70}")
 
+            # ── Standard MTT run ──────────────────────────────────────────────
             try:
                 feature_rows, main_row, hybrid_row = run_single_experiment(
                     dataset_name          = dataset_name,
@@ -622,17 +919,35 @@ def main() -> None:
                 if hybrid_row is not None:
                     all_hybrid.append(hybrid_row)
 
+                real_mse     = main_row['real_mse']
+                transfer_mse = main_row['transfer_mse']
+                mse_ratio    = transfer_mse / real_mse if real_mse > 0 else float('nan')
+                print(
+                    f"\n  [Standard MTT]  real_mse={real_mse:.6f}  "
+                    f"transfer_mse={transfer_mse:.6f}  ratio={mse_ratio:.4f}"
+                )
                 if COMPUTE_METRICS:
                     print(
-                        f"\n  real_mse={main_row['real_mse']:.6f}  "
-                        f"transfer_mse={main_row['transfer_mse']:.6f}  "
-                        f"acf_short={main_row['acf_short']:.4f}  "
+                        f"  acf_short={main_row['acf_short']:.4f}  "
                         f"acf_long={main_row['acf_long']:.4f}"
                     )
 
             except Exception as exc:
-                print(f"\n  [SKIP] {dataset_name} x {model_name} failed: {exc}")
-                continue
+                print(f"\n  [SKIP] {dataset_name} x {model_name} standard run failed: {exc}")
+
+            # ── Phase window experiment (H1, Thread 3) ───────────────────────
+            if COMPUTE_PHASE_WINDOW:
+                print(f"\n  [Phase Window] {dataset_name} x {model_name}")
+                try:
+                    run_phase_window_cell(
+                        dataset_name = dataset_name,
+                        model_name   = model_name,
+                        cfg          = DISTILL_CONFIG,
+                        results_dir  = results_dir,
+                    )
+                    # each row flushed immediately inside run_phase_window_cell
+                except Exception as exc:
+                    print(f"  [SKIP] Phase window failed: {exc}")
 
     if COMPUTE_METRICS:
         save_results(all_main, all_features, results_dir)
@@ -647,11 +962,16 @@ if __name__ == '__main__':
     # Uncomment and edit the lines below to test a single fast combination
     # before committing to the full matrix run.
     #
-    ACTIVE_DATASETS[:] = ['ETTh1']
-    ACTIVE_MODELS[:]   = ['DLinear']
+    # H1 experiment: ETTh1 + ETTm1 x all 4 models, phase window enabled
+    ACTIVE_DATASETS[:] = ['ETTh1', 'ETTm1']
+    ACTIVE_MODELS[:]   = ['DLinear', 'LSTM', 'MLP', 'CNN']
     DISTILL_CONFIG['n_distill_steps'] = 300
     DISTILL_CONFIG['expert_epochs']   = 80
     DISTILL_CONFIG['eval_max_epochs'] = 50   # still uses early stopping
+
+    # Enable the phase window experiment (H1).
+    # Set False here to run only the standard MTT pipeline.
+    COMPUTE_PHASE_WINDOW = True
     # ─────────────────────────────────────────────────────────────────────────
 
     main()
