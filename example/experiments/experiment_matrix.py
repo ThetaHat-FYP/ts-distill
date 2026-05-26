@@ -94,7 +94,7 @@ from ts_distill.evaluation.hybrid_evaluation.hybrid import (
 
 # Datasets to evaluate.
 # Remove entries you don't have CSV files for.
-ACTIVE_DATASETS = ['ETTh1', 'ETTh2', 'ETTm1', 'ETTm2', 'exchange_rate', 'national_illness', 'weather']
+ACTIVE_DATASETS = ['ETTh1', 'ETTh2', 'ETTm1', 'ETTm2', 'exchange_rate', 'weather']
 
 # Models to evaluate against each dataset.
 ACTIVE_MODELS = ['DLinear', 'LSTM', 'MLP', 'CNN']
@@ -233,7 +233,7 @@ DISTILL_CONFIG = {
     'expert_momentum':      0.9,
     'n_distill_steps':      300,
     'n_synthetic':          384,    # synthetic sequence length (timesteps)
-    'synthetic_lr':         0.1,
+    'synthetic_lr':         5.0,
     'student_lr':          0.01,
     'student_steps':         20,
     'snapshot_student_steps': 50,
@@ -501,6 +501,7 @@ def run_single_experiment(
             'dataset':             dataset_name,
             'model':               model_name,
             'distillation_method': DISTILLATION_METHOD,
+            'n_distill_steps':     cfg['n_distill_steps'],
             'real_mse':            real_mse,
             'transfer_mse':        transfer_mse,
         }, hybrid_row
@@ -509,8 +510,11 @@ def run_single_experiment(
     real_np = raw_train_data.detach().cpu().numpy()
     syn_np  = synthetic_sequence.detach().cpu().numpy()
 
-    period     = DATASET_PERIODS[dataset_name]
-    aggregator = MetricAggregator(period=period, n_lags=cfg['acf_n_lags'])
+    period  = DATASET_PERIODS[dataset_name]
+    # n_lags must exceed period (for acf_long range) and stay below n_synthetic.
+    # Use at least 2×period so short/long ranges are equally wide.
+    n_lags  = min(max(2 * period, cfg['acf_n_lags']), cfg['n_synthetic'] - 1)
+    aggregator = MetricAggregator(period=period, n_lags=n_lags)
 
     feature_rows, main_row = aggregator.compute_all(
         real                = real_np,
@@ -520,6 +524,7 @@ def run_single_experiment(
         dataset             = dataset_name,
         model               = model_name,
         distillation_method = DISTILLATION_METHOD,
+        n_distill_steps     = cfg['n_distill_steps'],
     )
 
     return feature_rows, main_row, hybrid_row
@@ -584,6 +589,68 @@ def save_hybrid_results(hybrid_rows: list, results_dir: Path) -> None:
 # ENTRY POINT
 # =============================================================================
 
+def run_budget_sensitivity(
+    dataset_name: str,
+    model_name:   str,
+    step_counts:  list,
+    results_dir:  Path,
+) -> None:
+    """
+    Run the same (dataset, model) at multiple distillation step counts and save
+    results to metrics_budget_sensitivity.csv.
+
+    Because torch.manual_seed(42) is called inside run_single_experiment, every
+    step count gets an identical expert trajectory and identical initialization —
+    only the distillation budget differs.  This makes the comparison clean.
+
+    Args:
+        dataset_name (str):  E.g. 'ETTh1'.
+        model_name   (str):  E.g. 'DLinear'.
+        step_counts  (list): List of int step counts, e.g. [0, 50, 100, 150, 200, 250, 300].
+                             0 = pure initialization baseline (no MTT optimization).
+        results_dir  (Path): Directory to write metrics_budget_sensitivity.csv into.
+    """
+    all_main     = []
+    all_features = []
+    total = len(step_counts)
+
+    for i, n_steps in enumerate(step_counts, 1):
+        print(f"\n{'=' * 70}")
+        print(f"[{i}/{total}]  {dataset_name}  x  {model_name}  —  n_steps={n_steps}")
+        print(f"{'=' * 70}")
+        try:
+            cfg = {**DISTILL_CONFIG, 'n_distill_steps': n_steps}
+            feature_rows, main_row, _ = run_single_experiment(
+                dataset_name          = dataset_name,
+                model_name            = model_name,
+                cfg                   = cfg,
+                compute_metrics       = True,
+                compute_hybrid_mixing = False,
+            )
+            all_main.append(main_row)
+            all_features.extend(feature_rows)
+            print(
+                f"\n  steps={n_steps}  transfer_mse={main_row['transfer_mse']:.6f}  "
+                f"acf_short={main_row['acf_short']:.4f}  acf_long={main_row['acf_long']:.4f}  "
+                f"fft_distance={main_row['fft_distance']:.4f}  trend_error={main_row['trend_error']:.4f}"
+            )
+        except Exception as exc:
+            print(f"\n  [SKIP] n_steps={n_steps} failed: {exc}")
+            continue
+
+    results_dir.mkdir(parents=True, exist_ok=True)
+    if all_main:
+        pd.DataFrame(all_main)[MetricAggregator.MAIN_COLUMNS].to_csv(
+            results_dir / 'metrics_budget_sensitivity.csv', index=False
+        )
+        print(f"\nBudget sensitivity saved → {results_dir / 'metrics_budget_sensitivity.csv'}")
+    if all_features:
+        pd.DataFrame(all_features)[MetricAggregator.FEATURE_COLUMNS].to_csv(
+            results_dir / 'metrics_budget_sensitivity_feature.csv', index=False
+        )
+        print(f"Budget feature table    → {results_dir / 'metrics_budget_sensitivity_feature.csv'}")
+
+
 def main() -> None:
     """
     Loop over the full ACTIVE_DATASETS × ACTIVE_MODELS matrix, run each
@@ -643,15 +710,13 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    # ── Optional overrides for quick smoke testing ────────────────────────────
-    # Uncomment and edit the lines below to test a single fast combination
-    # before committing to the full matrix run.
-    #
+   
+     # Full matrix run — produces metrics_main.csv and metrics_feature_wise.csv.
+    # Edit ACTIVE_DATASETS and ACTIVE_MODELS at the top of the file to control scope.
     ACTIVE_DATASETS[:] = ['ETTh1']
     ACTIVE_MODELS[:]   = ['DLinear']
     DISTILL_CONFIG['n_distill_steps'] = 300
     DISTILL_CONFIG['expert_epochs']   = 80
-    DISTILL_CONFIG['eval_max_epochs'] = 50   # still uses early stopping
-    # ─────────────────────────────────────────────────────────────────────────
+    DISTILL_CONFIG['eval_max_epochs'] = 50
 
     main()

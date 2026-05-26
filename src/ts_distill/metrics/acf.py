@@ -68,8 +68,10 @@ class ACFMetric(BaseTemporalMetric):
         for c in range(n_channels):
             # acf() returns lags 0..n_lags (length n_lags+1). Lag 0 is always
             # 1.0 for both sequences so we drop it — slice from index 1.
-            acf_real = acf(real_t[:, c], nlags=self.n_lags, fft=True)[1:]
-            acf_syn  = acf(syn_t[:, c],  nlags=self.n_lags, fft=True)[1:]
+            # nan_to_num guards near-constant channels where std≈0 causes acf()
+            # to return NaN (division by zero in the normalisation step).
+            acf_real = np.nan_to_num(acf(real_t[:, c], nlags=self.n_lags, fft=True)[1:], nan=0.0)
+            acf_syn  = np.nan_to_num(acf(syn_t[:, c],  nlags=self.n_lags, fft=True)[1:], nan=0.0)
 
             diff = np.abs(acf_real - acf_syn)
 

@@ -122,9 +122,8 @@ class MTTDistiller(BaseDistiller):
         # ── Setup ─────────────────────────────────────────────────────────────
         # Move the synthetic sequence to the target device and ensure it is a
         # differentiable leaf tensor so SGD can accumulate gradients into it.
-        synthetic_data = synthetic_init.to(self.device)
-        if not synthetic_data.requires_grad:
-            synthetic_data.requires_grad_(True)
+        synthetic_data = synthetic_init.detach().clone().to(self.device)
+        synthetic_data.requires_grad_(True)
 
         n_synthetic = synthetic_data.shape[0]
 
@@ -227,9 +226,6 @@ class MTTDistiller(BaseDistiller):
             grand_loss.backward()
 
             # ── Step 7: Update the synthetic sequence with the meta-gradient ──
-            # SGD applies the accumulated gradient to synthetic_data.  Over many
-            # steps the sequence is sculpted so that any student initialised at
-            # θ_start and trained on it will follow the expert trajectory.
             optimizer_img.step()
 
             if (step + 1) % 5 == 0 or step == 0:
@@ -254,7 +250,14 @@ class MTTDistiller(BaseDistiller):
         # ── Return ─────────────────────────────────────────────────────────────
         # If validation tracking was active, return the best checkpoint found
         # during training rather than the potentially overfit final sequence.
+        # If no snapshot was triggered (n_steps < val_snapshot_every), evaluate
+        # the final state now so the returned tensor reflects actual optimization.
         if val_data is not None:
+            if best_val_mse == float('inf'):
+                val_mse = self._evaluate_snapshot(synthetic_data.detach(), val_data)
+                best_val_mse   = val_mse
+                best_synthetic = synthetic_data.detach().clone()
+                print(f"   [Snapshot @ step {n_steps}] Val MSE: {val_mse:.6f} (end-of-run)")
             print(f"   Best snapshot val MSE: {best_val_mse:.6f}")
             return best_synthetic
 

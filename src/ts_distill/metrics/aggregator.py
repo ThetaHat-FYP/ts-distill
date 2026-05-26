@@ -6,6 +6,8 @@ from ts_distill.metrics.acf import ACFMetric
 from ts_distill.metrics.frequency import FrequencyMetric
 from ts_distill.metrics.trend import TrendMetric
 from ts_distill.metrics.variance import VarianceMetric
+from ts_distill.metrics.periodicity import PeriodicityMetric
+from ts_distill.metrics.cross_correlation import CrossCorrelationMetric
 
 
 class MetricAggregator:
@@ -40,14 +42,16 @@ class MetricAggregator:
     # Exact column order for both output tables.
     # The feature-wise table inserts 'feature' between 'model' and 'distillation_method'.
     MAIN_COLUMNS: List[str] = [
-        'dataset', 'model', 'distillation_method',
+        'dataset', 'model', 'distillation_method', 'n_distill_steps',
         'real_mse', 'transfer_mse',
         'acf_short', 'acf_long', 'fft_distance', 'trend_error', 'variance_diff',
+        'freq_rank_error', 'peak_mag_ratio', 'cross_corr_error',
     ]
     FEATURE_COLUMNS: List[str] = [
-        'dataset', 'feature', 'model', 'distillation_method',
+        'dataset', 'feature', 'model', 'distillation_method', 'n_distill_steps',
         'real_mse', 'transfer_mse',
         'acf_short', 'acf_long', 'fft_distance', 'trend_error', 'variance_diff',
+        'freq_rank_error', 'peak_mag_ratio', 'cross_corr_error',
     ]
 
     def __init__(
@@ -56,10 +60,12 @@ class MetricAggregator:
         n_lags: int   = 100,
         eps:    float = 1e-10,
     ) -> None:
-        self._acf      = ACFMetric(period=period, n_lags=n_lags)
-        self._freq     = FrequencyMetric()
-        self._trend    = TrendMetric(period=period)
-        self._variance = VarianceMetric(eps=eps)
+        self._acf          = ACFMetric(period=period, n_lags=n_lags)
+        self._freq         = FrequencyMetric()
+        self._trend        = TrendMetric(period=period)
+        self._variance     = VarianceMetric(eps=eps)
+        self._periodicity  = PeriodicityMetric(eps=eps)
+        self._cross_corr   = CrossCorrelationMetric()
 
     def compute_all(
         self,
@@ -70,6 +76,7 @@ class MetricAggregator:
         dataset:             str,
         model:               str,
         distillation_method: str,
+        n_distill_steps:     int = 0,
     ) -> Tuple[List[Dict], Dict]:
         """
         Run all four metric classes and assemble both table outputs.
@@ -88,15 +95,19 @@ class MetricAggregator:
                 feature_rows — list of C dicts, one per channel, keyed by FEATURE_COLUMNS.
                 main_row     — single dict keyed by MAIN_COLUMNS (channels averaged).
         """
-        # ── Run all four metrics ──────────────────────────────────────────────
-        # acf_results : (C, 2)  — col 0 = acf_short, col 1 = acf_long
-        # fft_results : (C,)
-        # trend_results: (C,)
-        # var_results : (C,)
-        acf_results   = self._acf.compute(real, synthetic)
-        fft_results   = self._freq.compute(real, synthetic)
-        trend_results = self._trend.compute(real, synthetic)
-        var_results   = self._variance.compute(real, synthetic)
+        # ── Run all six metrics ───────────────────────────────────────────────
+        # acf_results   : (C, 2) — col 0 = acf_short, col 1 = acf_long
+        # fft_results   : (C,)
+        # trend_results : (C,)
+        # var_results   : (C,)
+        # period_results: (C, 2) — col 0 = freq_rank_error, col 1 = peak_mag_ratio
+        # cross_corr    : float  — single scalar (not per-channel)
+        acf_results    = self._acf.compute(real, synthetic)
+        fft_results    = self._freq.compute(real, synthetic)
+        trend_results  = self._trend.compute(real, synthetic)
+        var_results    = self._variance.compute(real, synthetic)
+        period_results = self._periodicity.compute(real, synthetic)
+        cross_corr_val = self._cross_corr.compute(real, synthetic)
 
         n_channels = real.shape[1]
 
@@ -105,9 +116,10 @@ class MetricAggregator:
         for c in range(n_channels):
             row: Dict = {
                 'dataset':             dataset,
-                'feature':             c,          # 0-indexed channel integer
+                'feature':             c,
                 'model':               model,
                 'distillation_method': distillation_method,
+                'n_distill_steps':     n_distill_steps,
                 'real_mse':            real_mse,
                 'transfer_mse':        transfer_mse,
                 'acf_short':           float(acf_results[c, 0]),
@@ -115,6 +127,9 @@ class MetricAggregator:
                 'fft_distance':        float(fft_results[c]),
                 'trend_error':         float(trend_results[c]),
                 'variance_diff':       float(var_results[c]),
+                'freq_rank_error':     float(period_results[c, 0]),
+                'peak_mag_ratio':      float(period_results[c, 1]),
+                'cross_corr_error':    cross_corr_val,   # same scalar for all channels
             }
             feature_rows.append(row)
 
@@ -123,6 +138,7 @@ class MetricAggregator:
             'dataset':             dataset,
             'model':               model,
             'distillation_method': distillation_method,
+            'n_distill_steps':     n_distill_steps,
             'real_mse':            real_mse,
             'transfer_mse':        transfer_mse,
             'acf_short':           float(np.mean(acf_results[:, 0])),
@@ -130,6 +146,9 @@ class MetricAggregator:
             'fft_distance':        float(np.mean(fft_results)),
             'trend_error':         float(np.mean(trend_results)),
             'variance_diff':       float(np.mean(var_results)),
+            'freq_rank_error':     float(np.mean(period_results[:, 0])),
+            'peak_mag_ratio':      float(np.mean(period_results[:, 1])),
+            'cross_corr_error':    cross_corr_val,
         }
 
         return feature_rows, main_row

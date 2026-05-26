@@ -3,6 +3,8 @@ from .acf import ACFMetric
 from .frequency import FrequencyMetric
 from .trend import TrendMetric
 from .variance import VarianceMetric
+from .periodicity import PeriodicityMetric
+from .cross_correlation import CrossCorrelationMetric
 from .aggregator import MetricAggregator
 
 __all__ = [
@@ -11,5 +13,7 @@ __all__ = [
     'FrequencyMetric',
     'TrendMetric',
     'VarianceMetric',
+    'PeriodicityMetric',
+    'CrossCorrelationMetric',
     'MetricAggregator',
 ]
