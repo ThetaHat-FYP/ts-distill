@@ -1,6 +1,7 @@
 import torch
 from ts_distill.distillation_core.initializer.base import BaseInitializer
 
+
 class GeometrySequenceInitializer(BaseInitializer):
     def _apply_gaussian_noise(
         self,
@@ -9,9 +10,7 @@ class GeometrySequenceInitializer(BaseInitializer):
     ) -> torch.Tensor:
         if noise_std <= 0:
             return sequence
-
-        noise = torch.randn_like(sequence) * noise_std
-        return sequence + noise
+        return sequence + torch.randn_like(sequence) * noise_std
 
     def initialize(self, shape: tuple, real_data_reference: torch.Tensor = None) -> torch.Tensor:
         raise NotImplementedError("GeometrySequenceInitializer only supports continuous sequence initialization.")
@@ -23,23 +22,24 @@ class GeometrySequenceInitializer(BaseInitializer):
         noise_std: float = 0.08,
     ) -> torch.Tensor:
         """
-        Geometry-based initialisation for a single sequence.
+        Herding-based initialisation for a single synthetic sequence.
 
-        Finds the single continuous block of `n_synthetic` timesteps that is 
-        geometrically closest to the "average" behavior of the entire dataset 
-        (the geometric center or medoid).
+        Iteratively selects timesteps whose running mean best approximates the
+        global mean of the training data (Welling 2009 / dataset-distillation
+        herding).  Selected indices are sorted to preserve temporal order, then
+        concatenated to form a sequence of shape (n_synthetic, C).
 
         Args:
             raw_train_data (Tensor): Un-windowed, normalised training data,
                                      shape (T, C).  T must be > n_synthetic.
-            n_synthetic (int):       Number of timesteps in the synthetic
-                                     sequence (e.g. 384).
+            n_synthetic    (int):    Number of timesteps in the output sequence.
+            noise_std      (float):  Std of Gaussian noise added after selection.
 
         Returns:
             Tensor of shape (n_synthetic, C) with requires_grad=True.
 
         Raises:
-            ValueError: If raw_train_data is too short to slice n_synthetic rows.
+            ValueError: If raw_train_data is too short.
         """
         T, C = raw_train_data.shape
         if T <= n_synthetic:
@@ -48,31 +48,29 @@ class GeometrySequenceInitializer(BaseInitializer):
                 f"greater than n_synthetic ({n_synthetic})."
             )
 
-        # 1. Extract all possible sliding windows efficiently
-        # Resulting shape: (Total_Windows, n_synthetic, C)
-        windows = raw_train_data.unfold(0, n_synthetic, 1).transpose(1, 2)
-        total_windows = windows.shape[0]
+        device = raw_train_data.device
+        global_mean  = raw_train_data.mean(dim=0)          # (C,)
+        running_sum  = torch.zeros(C, device=device)
+        selected_idx = []
 
-        # Flatten windows for geometric distance calculations: shape (Total_Windows, n_synthetic * C)
-        flat_windows = windows.reshape(total_windows, -1)
+        for step in range(n_synthetic):
+            # Score each timestep: how close would the new running mean be
+            # to the global mean if we added that timestep?
+            candidates = (running_sum.unsqueeze(0) + raw_train_data) / (step + 1)
+            scores     = torch.norm(global_mean.unsqueeze(0) - candidates, dim=1)
+            best       = int(torch.argmin(scores).item())
+            selected_idx.append(best)
+            running_sum = running_sum + raw_train_data[best]
 
-        # 2. Find the geometric center (the "mean" sequence shape) of the entire dataset
-        mean_window = flat_windows.mean(dim=0, keepdim=True)
-
-        # 3. Calculate Euclidean distance from every window to the mean window
-        distances = torch.cdist(flat_windows, mean_window).squeeze()
-
-        # 4. Select the index of the window that is geometrically closest to the center
-        best_idx = torch.argmin(distances).item()
-
-        # Extract, clone, and prep for the optimiser
-        synthetic_seq = raw_train_data[best_idx : best_idx + n_synthetic].clone()
+        # Sort by time index to preserve temporal structure
+        selected_idx.sort()
+        synthetic_seq = raw_train_data[selected_idx].clone()
         synthetic_seq = self._apply_gaussian_noise(synthetic_seq, noise_std)
         synthetic_seq.requires_grad_(True)
 
         print(
-            f"  Geometry sequence initialised from random data (Most representative) "
-            f"(rows {best_idx}–{best_idx + n_synthetic - 1}), "
+            f"  Herding initialised synthetic sequence "
+            f"({n_synthetic} timesteps selected from {T}), "
             f"shape {tuple(synthetic_seq.shape)}"
         )
 

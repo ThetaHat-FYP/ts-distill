@@ -66,6 +66,8 @@ from ts_distill.models.factory import create_model
 # ── Framework — distillation ──────────────────────────────────────────────────
 from ts_distill.distillation_core.distillation_algorithm.mtt import MTTDistiller
 from ts_distill.distillation_core.initializer.random_sample_initializer import RandomSampleInitializer
+from ts_distill.distillation_core.initializer.geommetry_sequence_initializer import GeometrySequenceInitializer
+from ts_distill.distillation_core.initializer.uncertainty_sequence_initializer import UncertaintySampleInitializer
 
 # ── Framework — training ──────────────────────────────────────────────────────
 from ts_distill.trainer.trainer.trainer import Trainer
@@ -94,7 +96,7 @@ from ts_distill.evaluation.hybrid_evaluation.hybrid import (
 
 # Datasets to evaluate.
 # Remove entries you don't have CSV files for.
-ACTIVE_DATASETS = ['ETTh1', 'ETTh2', 'ETTm1', 'ETTm2', 'exchange_rate', 'national_illness', 'weather']
+ACTIVE_DATASETS = ['ETTh1', 'ETTh2', 'ETTm1', 'ETTm2', 'exchange_rate', 'weather']
 
 # Models to evaluate against each dataset.
 ACTIVE_MODELS = ['DLinear', 'LSTM', 'MLP', 'CNN']
@@ -284,7 +286,7 @@ def _make_model_factory(model_name: str, cfg: dict):
 
 
 def run_single_experiment(
-    dataset_name:    str,
+    dataset_name:          str,
     model_name:            str,
     cfg:                   dict,
     compute_metrics:       bool = True,
@@ -307,7 +309,7 @@ def run_single_experiment(
             main_row     — aggregate result dict.
             hybrid_row   — {dataset, model, hybrid_<r>_mse, ...} or None.
     """
-    torch.manual_seed(42)
+    torch.manual_seed(7)
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     # ── Resolve per-dataset overrides ─────────────────────────────────────────
@@ -330,7 +332,6 @@ def run_single_experiment(
             f"CSV not found at '{csv_path}'. "
             f"Download the ETT datasets and place them in example/."
         )
-
     df_raw = pd.read_csv(csv_path)
     values = df_raw.iloc[:, 1:].values.astype(np.float32)   # drop date column
 
@@ -375,8 +376,12 @@ def run_single_experiment(
     )
 
     # ── Step 3: Distil synthetic sequence ─────────────────────────────────────
-    initializer    = RandomSampleInitializer()
+    # initializer    = RandomSampleInitializer()
+    # synthetic_init = initializer.initialize_sequence(raw_train_data, cfg['n_synthetic'])
+    initializer    = GeometrySequenceInitializer()
     synthetic_init = initializer.initialize_sequence(raw_train_data, cfg['n_synthetic'])
+    # initializer = UncertaintySampleInitializer()
+    # synthetic_init = initializer.initialize_sequence(raw_train_data, cfg['n_synthetic'])
 
     distiller = MTTDistiller(
         initializer            = initializer,
@@ -564,6 +569,19 @@ def save_results(
         print(f"Feature table saved → {feature_path}")
 
 
+def save_mse_results(main_rows: list, results_dir: Path) -> None:
+    """Write real_mse and synthetic_mse for every (dataset, model) run."""
+    if not main_rows:
+        return
+    results_dir.mkdir(parents=True, exist_ok=True)
+    path = results_dir / 'metrics_mse.csv'
+    cols = ['dataset', 'model', 'distillation_method', 'real_mse', 'transfer_mse']
+    pd.DataFrame(main_rows)[cols].rename(
+        columns={'transfer_mse': 'synthetic_mse'}
+    ).to_csv(path, index=False)
+    print(f"MSE table saved     → {path}")
+
+
 def save_hybrid_results(hybrid_rows: list, results_dir: Path) -> None:
     """Write hybrid mixing results to metrics_hybrid.csv."""
     if not hybrid_rows:
@@ -604,9 +622,8 @@ def main() -> None:
     for dataset_name in ACTIVE_DATASETS:
         for model_name in ACTIVE_MODELS:
             done += 1
-            header = f"[{done}/{total}]  {dataset_name}  x  {model_name}"
             print(f"\n{'=' * 70}")
-            print(header)
+            print(f"[{done}/{total}]  {dataset_name}  x  {model_name}")
             print(f"{'=' * 70}")
 
             try:
@@ -621,19 +638,14 @@ def main() -> None:
                 all_features.extend(feature_rows)
                 if hybrid_row is not None:
                     all_hybrid.append(hybrid_row)
-
-                if COMPUTE_METRICS:
-                    print(
-                        f"\n  real_mse={main_row['real_mse']:.6f}  "
-                        f"transfer_mse={main_row['transfer_mse']:.6f}  "
-                        f"acf_short={main_row['acf_short']:.4f}  "
-                        f"acf_long={main_row['acf_long']:.4f}"
-                    )
-
+                print(
+                    f"\n  real_mse={main_row['real_mse']:.6f}  "
+                    f"synthetic_mse={main_row['transfer_mse']:.6f}"
+                )
             except Exception as exc:
                 print(f"\n  [SKIP] {dataset_name} x {model_name} failed: {exc}")
-                continue
 
+    save_mse_results(all_main, results_dir)
     if COMPUTE_METRICS:
         save_results(all_main, all_features, results_dir)
     if COMPUTE_HYBRID_MIXING:
@@ -647,11 +659,8 @@ if __name__ == '__main__':
     # Uncomment and edit the lines below to test a single fast combination
     # before committing to the full matrix run.
     #
-    ACTIVE_DATASETS[:] = ['ETTh1']
-    ACTIVE_MODELS[:]   = ['DLinear']
-    DISTILL_CONFIG['n_distill_steps'] = 300
-    DISTILL_CONFIG['expert_epochs']   = 80
-    DISTILL_CONFIG['eval_max_epochs'] = 50   # still uses early stopping
+    ACTIVE_DATASETS[:] = ['ETTh1', 'ETTh2', 'ETTm1', 'ETTm2', 'exchange_rate', 'weather']
+    ACTIVE_MODELS[:]   = ['DLinear', 'LSTM', 'MLP', 'CNN']
     # ─────────────────────────────────────────────────────────────────────────
 
     main()
