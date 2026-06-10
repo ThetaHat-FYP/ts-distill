@@ -141,28 +141,28 @@ DATASET_PERIODS = {
 DATASET_CONFIGS = {
     # ── ETT family (benchmark borders from Informer / DLinear papers) ─────────
     'ETTh1': {
-        'csv_path':    'example/ETTh1.csv',
+        'csv_path':    r'C:\fyp\ts-distill\example\ETTh1.csv',
         'split_mode':  'benchmark_borders',
         'border1s':    [0, 12 * 30 * 24 - 96,       12 * 30 * 24 + 4 * 30 * 24 - 96],
         'border2s':    [12 * 30 * 24, 12 * 30 * 24 + 4 * 30 * 24, 12 * 30 * 24 + 8 * 30 * 24],
         'in_features': 7,
     },
     'ETTh2': {
-        'csv_path':    'example/ETTh2.csv',
+        'csv_path':    r'C:\fyp\ts-distill\example\ETTh2.csv',
         'split_mode':  'benchmark_borders',
         'border1s':    [0, 12 * 30 * 24 - 96,       12 * 30 * 24 + 4 * 30 * 24 - 96],
         'border2s':    [12 * 30 * 24, 12 * 30 * 24 + 4 * 30 * 24, 12 * 30 * 24 + 8 * 30 * 24],
         'in_features': 7,
     },
     'ETTm1': {
-        'csv_path':    'example/ETTm1.csv',
+        'csv_path':    r'C:\fyp\ts-distill\example\ETTm1.csv',
         'split_mode':  'benchmark_borders',
         'border1s':    [0, 12 * 30 * 96 - 96,       12 * 30 * 96 + 4 * 30 * 96 - 96],
         'border2s':    [12 * 30 * 96, 12 * 30 * 96 + 4 * 30 * 96, 12 * 30 * 96 + 8 * 30 * 96],
         'in_features': 7,
     },
     'ETTm2': {
-        'csv_path':    'example/ETTm2.csv',
+        'csv_path':    r'C:\fyp\ts-distill\example\ETTm2.csv',
         'split_mode':  'benchmark_borders',
         'border1s':    [0, 12 * 30 * 96 - 96,       12 * 30 * 96 + 4 * 30 * 96 - 96],
         'border2s':    [12 * 30 * 96, 12 * 30 * 96 + 4 * 30 * 96, 12 * 30 * 96 + 8 * 30 * 96],
@@ -173,7 +173,7 @@ DATASET_CONFIGS = {
     # 70/10/20 ratio split — no standard border indices in literature.
     # Period = 5 (one trading week); seq_len/pred_len inherit global 96/96.
     'exchange_rate': {
-        'csv_path':    'example/exchange_rate.csv',
+        'csv_path':    r'C:\fyp\ts-distill\example/exchange_rate.csv',
         'split_mode':  'ratios',
         'train_ratio': 0.7,
         'val_ratio':   0.1,
@@ -184,7 +184,7 @@ DATASET_CONFIGS = {
     # seq_len=36 overrides the global 96 — weekly data is too sparse for 96.
     # Period = 52 (annual flu season cycle).
     'national_illness': {
-        'csv_path':    'example/national_illness.csv',
+        'csv_path':    r'C:\fyp\ts-distill\example/national_illness.csv',
         'split_mode':  'ratios',
         'train_ratio': 0.6,
         'val_ratio':   0.2,
@@ -197,7 +197,7 @@ DATASET_CONFIGS = {
     # Period = 144 (one day = 6 readings/hour × 24 hours).
     # seq_len/pred_len inherit global 96/96.
     'weather': {
-        'csv_path':    'example/weather.csv',
+        'csv_path':    r'C:\fyp\ts-distill\example/weather.csv',
         'split_mode':  'ratios',
         'train_ratio': 0.7,
         'val_ratio':   0.1,
@@ -713,8 +713,8 @@ if __name__ == '__main__':
    
      # Full matrix run — produces metrics_main.csv and metrics_feature_wise.csv.
     # Edit ACTIVE_DATASETS and ACTIVE_MODELS at the top of the file to control scope.
-    ACTIVE_DATASETS[:] = ['ETTh1']
-    ACTIVE_MODELS[:]   = ['DLinear']
+    ACTIVE_DATASETS[:] = ['ETTm2']
+    ACTIVE_MODELS[:]   = ['CNN']
     DISTILL_CONFIG['n_distill_steps'] = 300
     DISTILL_CONFIG['expert_epochs']   = 80
     DISTILL_CONFIG['eval_max_epochs'] = 50

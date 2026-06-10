@@ -1,0 +1,17 @@
+dataset,expert,diag_ratio,diag_diverged,offdiag_mean,h1_weak,h1_strict,gap_diag_minus_off
+ETTh1,DLinear,1.108116,False,1.238106,True,True,-0.12999
+ETTh1,LSTM,1.236358,False,1.681321,True,False,-0.444963
+ETTh1,MLP,6.85136,True,1.17677,False,False,5.67459
+ETTh1,CNN,1.179716,False,1.087914,False,False,0.091802
+ETTh2,DLinear,1.199443,False,1.476102,True,False,-0.276659
+ETTh2,LSTM,1.942766,False,1.18924,False,False,0.753526
+ETTh2,MLP,1.205593,False,1.465637,True,False,-0.260044
+ETTh2,CNN,1.120752,False,1.578852,True,True,-0.4581
+ETTm1,DLinear,1.054497,False,1.50179,True,True,-0.447293
+ETTm1,LSTM,2.179977,False,1.603628,False,False,0.576349
+ETTm1,MLP,1.380017,False,1.428299,True,False,-0.048283
+ETTm1,CNN,2.128327,False,2.066779,False,False,0.061548
+ETTm2,DLinear,1.133293,False,3.318487,True,True,-2.185194
+ETTm2,LSTM,6.210505,True,2.190815,False,False,4.01969
+ETTm2,MLP,1.357944,False,2.874533,True,False,-1.516589
+ETTm2,CNN,9.374197,True,2.616968,False,False,6.757229

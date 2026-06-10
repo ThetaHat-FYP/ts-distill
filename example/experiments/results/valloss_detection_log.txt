@@ -1,0 +1,361 @@
+Device: cpu
+
+========================================================================
+PHASE BOUNDARY DETECTION — Method B: Validation Loss Plateau
+========================================================================
+  smoothing_window=5  patience=5  min_delta_frac=0.01
+  Rule: T+ = epoch of best smoothed val loss before 5 consecutive epochs with < 1.0% relative improvement
+
+
+============================================================
+  Dataset: ETTh1
+============================================================
+
+  Model=DLinear | Seed=42
+  T+ detected at epoch 6  (val_loss_smooth=0.667489)
+  best_val_loss  = 0.667489
+  final_val_loss = 0.660340
+  Val loss curve (epoch : smoothed):
+    epoch   1: 0.701339
+    epoch   2: 0.693446
+    epoch   3: 0.688506
+    epoch   4: 0.675716
+    epoch   5: 0.670216
+    epoch   6: 0.667489 <-- T+
+    epoch  11: 0.663956
+    epoch  21: 0.658861
+    epoch  31: 0.658805
+    epoch  41: 0.655738
+    epoch  51: 0.659010
+    epoch  61: 0.658707
+    epoch  71: 0.658409
+
+  Model=LSTM | Seed=42
+  T+ detected at epoch 10  (val_loss_smooth=1.435413)
+  best_val_loss  = 1.435413
+  final_val_loss = 1.344121
+  Val loss curve (epoch : smoothed):
+    epoch   1: 1.508283
+    epoch   2: 1.504224
+    epoch   3: 1.499982
+    epoch   4: 1.491322
+    epoch   5: 1.482222
+    epoch  10: 1.435413 <-- T+
+    epoch  11: 1.430619
+    epoch  21: 1.429549
+    epoch  31: 1.390885
+    epoch  41: 1.371097
+    epoch  51: 1.379010
+    epoch  61: 1.382708
+    epoch  71: 1.361100
+
+  Model=MLP | Seed=42
+  T+ detected at epoch 17  (val_loss_smooth=0.673475)
+  best_val_loss  = 0.673475
+  final_val_loss = 0.659556
+  Val loss curve (epoch : smoothed):
+    epoch   1: 0.863407
+    epoch   2: 0.830910
+    epoch   3: 0.808025
+    epoch   4: 0.751779
+    epoch   5: 0.722728
+    epoch  11: 0.682006
+    epoch  17: 0.673475 <-- T+
+    epoch  21: 0.671602
+    epoch  31: 0.667347
+    epoch  41: 0.665739
+    epoch  51: 0.661865
+    epoch  61: 0.661268
+    epoch  71: 0.659053
+
+  Model=CNN | Seed=42
+  T+ detected at epoch 15  (val_loss_smooth=0.672856)
+  best_val_loss  = 0.672856
+  final_val_loss = 0.662723
+  Val loss curve (epoch : smoothed):
+    epoch   1: 0.805649
+    epoch   2: 0.781387
+    epoch   3: 0.765459
+    epoch   4: 0.722447
+    epoch   5: 0.705082
+    epoch  11: 0.679838
+    epoch  15: 0.672856 <-- T+
+    epoch  21: 0.669661
+    epoch  31: 0.667007
+    epoch  41: 0.668353
+    epoch  51: 0.665079
+    epoch  61: 0.662360
+    epoch  71: 0.662457
+
+============================================================
+  Dataset: ETTh2
+============================================================
+
+  Model=DLinear | Seed=42
+  T+ detected at epoch 12  (val_loss_smooth=0.234433)
+  best_val_loss  = 0.234433
+  final_val_loss = 0.237341
+  Val loss curve (epoch : smoothed):
+    epoch   1: 0.259717
+    epoch   2: 0.257257
+    epoch   3: 0.256362
+    epoch   4: 0.250243
+    epoch   5: 0.241202
+    epoch  11: 0.236973
+    epoch  12: 0.234433 <-- T+
+    epoch  21: 0.231618
+    epoch  31: 0.229477
+    epoch  41: 0.229506
+    epoch  51: 0.230755
+    epoch  61: 0.238582
+    epoch  71: 0.235503
+
+  Model=LSTM | Seed=42
+  T+ detected at epoch 50  (val_loss_smooth=0.854898)
+  best_val_loss  = 0.854898
+  final_val_loss = 0.810194
+  Val loss curve (epoch : smoothed):
+    epoch   1: 1.547420
+    epoch   2: 1.539558
+    epoch   3: 1.530635
+    epoch   4: 1.512037
+    epoch   5: 1.489485
+    epoch  11: 1.291113
+    epoch  21: 1.115386
+    epoch  31: 1.010106
+    epoch  41: 0.906501
+    epoch  50: 0.854898 <-- T+
+    epoch  51: 0.852601
+    epoch  61: 0.809108
+    epoch  71: 0.759179
+
+  Model=MLP | Seed=42
+  T+ detected at epoch 17  (val_loss_smooth=0.245687)
+  best_val_loss  = 0.245687
+  final_val_loss = 0.246165
+  Val loss curve (epoch : smoothed):
+    epoch   1: 0.285440
+    epoch   2: 0.279425
+    epoch   3: 0.276469
+    epoch   4: 0.272008
+    epoch   5: 0.266857
+    epoch  11: 0.252332
+    epoch  17: 0.245687 <-- T+
+    epoch  21: 0.253918
+    epoch  31: 0.245525
+    epoch  41: 0.257443
+    epoch  51: 0.241359
+    epoch  61: 0.253872
+    epoch  71: 0.244481
+
+  Model=CNN | Seed=42
+  T+ detected at epoch 6  (val_loss_smooth=0.253867)
+  best_val_loss  = 0.253867
+  final_val_loss = 0.268239
+  Val loss curve (epoch : smoothed):
+    epoch   1: 0.299765
+    epoch   2: 0.285559
+    epoch   3: 0.281016
+    epoch   4: 0.270823
+    epoch   5: 0.259805
+    epoch   6: 0.253867 <-- T+
+    epoch  11: 0.262414
+    epoch  21: 0.270857
+    epoch  31: 0.238056
+    epoch  41: 0.244550
+    epoch  51: 0.248810
+    epoch  61: 0.255244
+    epoch  71: 0.238016
+
+============================================================
+  Dataset: ETTm1
+============================================================
+
+  Model=DLinear | Seed=42
+  T+ detected at epoch 8  (val_loss_smooth=0.397062)
+  best_val_loss  = 0.397062
+  final_val_loss = 0.396735
+  Val loss curve (epoch : smoothed):
+    epoch   1: 0.410146
+    epoch   2: 0.407502
+    epoch   3: 0.405664
+    epoch   4: 0.401120
+    epoch   5: 0.399165
+    epoch   8: 0.397062 <-- T+
+    epoch  11: 0.396448
+    epoch  21: 0.397306
+    epoch  31: 0.396532
+    epoch  41: 0.396546
+    epoch  51: 0.397219
+    epoch  61: 0.395978
+    epoch  71: 0.397290
+
+  Model=LSTM | Seed=42
+  T+ detected at epoch 16  (val_loss_smooth=1.073625)
+  best_val_loss  = 1.073625
+  final_val_loss = 0.908660
+  Val loss curve (epoch : smoothed):
+    epoch   1: 1.405028
+    epoch   2: 1.385372
+    epoch   3: 1.367594
+    epoch   4: 1.328015
+    epoch   5: 1.293873
+    epoch  11: 1.136016
+    epoch  16: 1.073625 <-- T+
+    epoch  21: 1.067774
+    epoch  31: 1.043050
+    epoch  41: 1.025225
+    epoch  51: 0.994110
+    epoch  61: 0.966160
+    epoch  71: 0.915882
+
+  Model=MLP | Seed=42
+  T+ detected at epoch 9  (val_loss_smooth=0.412108)
+  best_val_loss  = 0.412108
+  final_val_loss = 0.414061
+  Val loss curve (epoch : smoothed):
+    epoch   1: 0.444663
+    epoch   2: 0.437844
+    epoch   3: 0.433452
+    epoch   4: 0.421146
+    epoch   5: 0.416462
+    epoch   9: 0.412108 <-- T+
+    epoch  11: 0.411681
+    epoch  21: 0.410029
+    epoch  31: 0.409434
+    epoch  41: 0.410876
+    epoch  51: 0.413927
+    epoch  61: 0.414254
+    epoch  71: 0.416048
+
+  Model=CNN | Seed=42
+  T+ detected at epoch 6  (val_loss_smooth=0.406619)
+  best_val_loss  = 0.406619
+  final_val_loss = 0.402021
+  Val loss curve (epoch : smoothed):
+    epoch   1: 0.422857
+    epoch   2: 0.419571
+    epoch   3: 0.417271
+    epoch   4: 0.411348
+    epoch   5: 0.409312
+    epoch   6: 0.406619 <-- T+
+    epoch  11: 0.403330
+    epoch  21: 0.400874
+    epoch  31: 0.400339
+    epoch  41: 0.402592
+    epoch  51: 0.400933
+    epoch  61: 0.399926
+    epoch  71: 0.398852
+
+============================================================
+  Dataset: ETTm2
+============================================================
+
+  Model=DLinear | Seed=42
+  T+ detected at epoch 8  (val_loss_smooth=0.133814)
+  best_val_loss  = 0.133814
+  final_val_loss = 0.131646
+  Val loss curve (epoch : smoothed):
+    epoch   1: 0.139390
+    epoch   2: 0.137038
+    epoch   3: 0.136859
+    epoch   4: 0.135417
+    epoch   5: 0.134705
+    epoch   8: 0.133814 <-- T+
+    epoch  11: 0.134887
+    epoch  21: 0.136016
+    epoch  31: 0.134313
+    epoch  41: 0.134866
+    epoch  51: 0.134531
+    epoch  61: 0.132577
+    epoch  71: 0.134438
+
+  Model=LSTM | Seed=42
+  T+ detected at epoch 39  (val_loss_smooth=0.419103)
+  best_val_loss  = 0.419103
+  final_val_loss = 0.364312
+  Val loss curve (epoch : smoothed):
+    epoch   1: 1.333126
+    epoch   2: 1.267704
+    epoch   3: 1.211585
+    epoch   4: 1.097434
+    epoch   5: 1.003731
+    epoch  11: 0.724222
+    epoch  21: 0.529721
+    epoch  31: 0.453578
+    epoch  39: 0.419103 <-- T+
+    epoch  41: 0.425242
+    epoch  51: 0.415285
+    epoch  61: 0.411551
+    epoch  71: 0.415682
+
+  Model=MLP | Seed=42
+  T+ detected at epoch 9  (val_loss_smooth=0.139286)
+  best_val_loss  = 0.139286
+  final_val_loss = 0.130683
+  Val loss curve (epoch : smoothed):
+    epoch   1: 0.150032
+    epoch   2: 0.148087
+    epoch   3: 0.147801
+    epoch   4: 0.145402
+    epoch   5: 0.143609
+    epoch   9: 0.139286 <-- T+
+    epoch  11: 0.139491
+    epoch  21: 0.133701
+    epoch  31: 0.132460
+    epoch  41: 0.130626
+    epoch  51: 0.133434
+    epoch  61: 0.135113
+    epoch  71: 0.128265
+
+  Model=CNN | Seed=42
+  T+ detected at epoch 8  (val_loss_smooth=0.137409)
+  best_val_loss  = 0.137409
+  final_val_loss = 0.140880
+  Val loss curve (epoch : smoothed):
+    epoch   1: 0.146217
+    epoch   2: 0.147180
+    epoch   3: 0.148275
+    epoch   4: 0.148661
+    epoch   5: 0.146981
+    epoch   8: 0.137409 <-- T+
+    epoch  11: 0.138324
+    epoch  21: 0.136054
+    epoch  31: 0.135972
+    epoch  41: 0.139468
+    epoch  51: 0.148380
+    epoch  61: 0.137915
+    epoch  71: 0.138182
+
+
+========================================================================
+DETECTED PHASE BOUNDARIES SUMMARY (Method B — Val Loss Plateau)
+========================================================================
+
+Dataset    Model       Seed       T+  Notes
+--------------------------------------------------
+ETTh1      DLinear       42        6  
+ETTh1      LSTM          42       10  
+ETTh1      MLP           42       17  
+ETTh1      CNN           42       15  
+ETTh2      DLinear       42       12  
+ETTh2      LSTM          42       50  
+ETTh2      LSTM          42       50  
+ETTh2      MLP           42       17  
+ETTh2      MLP           42       17  
+ETTh2      CNN           42        6  
+ETTh2      CNN           42        6  
+ETTm1      DLinear       42        8  
+ETTm1      DLinear       42        8  
+ETTm1      LSTM          42       16  
+ETTm1      LSTM          42       16  
+ETTm1      MLP           42        9  
+ETTm1      MLP           42        9  
+ETTm1      CNN           42        6  
+ETTm2      DLinear       42        8  
+ETTm2      LSTM          42       39  
+ETTm2      MLP           42        9  
+ETTm2      CNN           42        8  
+
+Boundaries  : C:\fyp\ts-distill\example\experiments\results\phase_boundaries_valloss.csv
+Curves      : C:\fyp\ts-distill\example\experiments\results\phase_boundary_valloss_curves.csv
