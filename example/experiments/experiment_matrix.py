@@ -66,6 +66,8 @@ from ts_distill.models.factory import create_model
 # ── Framework — distillation ──────────────────────────────────────────────────
 from ts_distill.distillation_core.distillation_algorithm.mtt import MTTDistiller
 from ts_distill.distillation_core.initializer.random_sample_initializer import RandomSampleInitializer
+from ts_distill.distillation_core.initializer.geommetry_sequence_initializer import GeometrySequenceInitializer
+from ts_distill.distillation_core.initializer.uncertainty_sequence_initializer import UncertaintySampleInitializer
 
 # ── Framework — training ──────────────────────────────────────────────────────
 from ts_distill.trainer.trainer.trainer import Trainer
@@ -94,7 +96,7 @@ from ts_distill.evaluation.hybrid_evaluation.hybrid import (
 
 # Datasets to evaluate.
 # Remove entries you don't have CSV files for.
-ACTIVE_DATASETS = ['ETTh1', 'ETTh2', 'ETTm1', 'ETTm2', 'exchange_rate', 'weather']
+ACTIVE_DATASETS = ['ETTh1', 'ETTh2', 'ETTm1', 'ETTm2']
 
 # Models to evaluate against each dataset.
 ACTIVE_MODELS = ['DLinear', 'LSTM', 'MLP', 'CNN']
@@ -307,7 +309,7 @@ def run_single_experiment(
             main_row     — aggregate result dict.
             hybrid_row   — {dataset, model, hybrid_<r>_mse, ...} or None.
     """
-    torch.manual_seed(42)
+    torch.manual_seed(123)
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     # ── Resolve per-dataset overrides ─────────────────────────────────────────
@@ -375,7 +377,11 @@ def run_single_experiment(
     )
 
     # ── Step 3: Distil synthetic sequence ─────────────────────────────────────
-    initializer    = RandomSampleInitializer()
+    # initializer    = RandomSampleInitializer()
+    # synthetic_init = initializer.initialize_sequence(raw_train_data, cfg['n_synthetic'])
+    # initializer    = GeometrySequenceInitializer()
+    # synthetic_init = initializer.initialize_sequence(raw_train_data,cfg['n_synthetic'])
+    initializer = UncertaintySampleInitializer()
     synthetic_init = initializer.initialize_sequence(raw_train_data, cfg['n_synthetic'])
 
     distiller = MTTDistiller(
@@ -569,6 +575,19 @@ def save_results(
         print(f"Feature table saved → {feature_path}")
 
 
+def save_mse_results(main_rows: list, results_dir: Path) -> None:
+    """Write real_mse and synthetic_mse for every completed (dataset, model) run."""
+    if not main_rows:
+        return
+    results_dir.mkdir(parents=True, exist_ok=True)
+    path = results_dir / 'metrics_mse.csv'
+    cols = ['dataset', 'model', 'distillation_method', 'real_mse', 'transfer_mse']
+    pd.DataFrame(main_rows)[cols].rename(
+        columns={'transfer_mse': 'synthetic_mse'}
+    ).to_csv(path, index=False)
+    print(f"MSE table saved     → {path}")
+
+
 def save_hybrid_results(hybrid_rows: list, results_dir: Path) -> None:
     """Write hybrid mixing results to metrics_hybrid.csv."""
     if not hybrid_rows:
@@ -653,17 +672,26 @@ def run_budget_sensitivity(
 
 def main() -> None:
     """
-    Loop over the full ACTIVE_DATASETS × ACTIVE_MODELS matrix, run each
-    combination, and collect results into both CSV files.
-
-    A try/except around each combination means a single failed run (e.g. a
-    missing CSV file) does not abort the entire matrix — the error is logged
-    and the loop continues.
+    Loop over ACTIVE_DATASETS × ACTIVE_MODELS.  Saves metrics_mse.csv after
+    every successful run; skips already-completed pairs so interrupted runs
+    can be resumed by re-running the same command.
     """
-    results_dir  = Path(__file__).parent / 'results'
-    all_main     = []
-    all_features = []
-    all_hybrid   = []
+    results_dir = Path(__file__).parent / 'results'
+    mse_path    = results_dir / 'metrics_mse.csv'
+
+    # Load any previous results so we can resume mid-matrix
+    all_main: list = []
+    completed: set = set()
+    if mse_path.exists():
+        existing = pd.read_csv(mse_path).rename(
+            columns={'synthetic_mse': 'transfer_mse'}
+        ).to_dict('records')
+        all_main  = existing
+        completed = {(r['dataset'], r['model']) for r in existing}
+        print(f"Resuming: {len(completed)} combination(s) already done.")
+
+    all_features: list = []
+    all_hybrid:   list = []
 
     total = len(ACTIVE_DATASETS) * len(ACTIVE_MODELS)
     done  = 0
@@ -671,9 +699,13 @@ def main() -> None:
     for dataset_name in ACTIVE_DATASETS:
         for model_name in ACTIVE_MODELS:
             done += 1
-            header = f"[{done}/{total}]  {dataset_name}  x  {model_name}"
+
+            if (dataset_name, model_name) in completed:
+                print(f"[{done}/{total}]  {dataset_name} x {model_name}  — already done, skipping")
+                continue
+
             print(f"\n{'=' * 70}")
-            print(header)
+            print(f"[{done}/{total}]  {dataset_name}  x  {model_name}")
             print(f"{'=' * 70}")
 
             try:
@@ -689,17 +721,15 @@ def main() -> None:
                 if hybrid_row is not None:
                     all_hybrid.append(hybrid_row)
 
-                if COMPUTE_METRICS:
-                    print(
-                        f"\n  real_mse={main_row['real_mse']:.6f}  "
-                        f"transfer_mse={main_row['transfer_mse']:.6f}  "
-                        f"acf_short={main_row['acf_short']:.4f}  "
-                        f"acf_long={main_row['acf_long']:.4f}"
-                    )
+                # Always save MSE results after each run
+                save_mse_results(all_main, results_dir)
+                print(
+                    f"\n  real_mse={main_row['real_mse']:.6f}  "
+                    f"synthetic_mse={main_row['transfer_mse']:.6f}"
+                )
 
             except Exception as exc:
                 print(f"\n  [SKIP] {dataset_name} x {model_name} failed: {exc}")
-                continue
 
     if COMPUTE_METRICS:
         save_results(all_main, all_features, results_dir)
@@ -710,13 +740,26 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-   
-     # Full matrix run — produces metrics_main.csv and metrics_feature_wise.csv.
-    # Edit ACTIVE_DATASETS and ACTIVE_MODELS at the top of the file to control scope.
-    ACTIVE_DATASETS[:] = ['ETTh1']
-    ACTIVE_MODELS[:]   = ['DLinear']
-    DISTILL_CONFIG['n_distill_steps'] = 300
-    DISTILL_CONFIG['expert_epochs']   = 80
-    DISTILL_CONFIG['eval_max_epochs'] = 50
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Run the experiment matrix.')
+    parser.add_argument(
+        '--dataset',
+        choices=list(DATASET_CONFIGS.keys()) + ['all'],
+        default='all',
+        help='Single dataset to run, or "all" for the full matrix (default: all)',
+    )
+    parser.add_argument(
+        '--model',
+        choices=list(MODEL_CONFIGS.keys()) + ['all'],
+        default='all',
+        help='Single model to run, or "all" for every model (default: all)',
+    )
+    args = parser.parse_args()
+
+    if args.dataset != 'all':
+        ACTIVE_DATASETS[:] = [args.dataset]
+    if args.model != 'all':
+        ACTIVE_MODELS[:] = [args.model]
 
     main()
