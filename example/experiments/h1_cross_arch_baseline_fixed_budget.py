@@ -1,18 +1,17 @@
 """
-H1 Cross-Architecture Baseline (Clean Evaluation Version)
-=========================================================
+H1 Cross-Architecture Baseline (Fixed-Budget Evaluation Version)
+==================================================================
 
-Goal
-----
-Test whether MTT synthetic data transfers equally across architectures.
+Variant of h1_cross_arch_baseline.py with NO early stopping during
+evaluation: both the real-data model and the synthetic-data model are
+trained for a FIXED number of epochs (eval_max_epochs), with no val_loader
+and no patience-based stopping. This isolates synthetic-data quality from
+differences in how quickly early stopping fires for each architecture /
+dataset size.
 
-Key Experimental Fixes
-----------------------
-1. NO early stopping
-2. NO real validation during synthetic training
-3. FIXED training budget for ALL evaluations
-4. Real baseline recomputed PER SEED
-5. Cleaner isolation of synthetic-data quality
+Everything else (dataset configs, model configs, distillation hyperparameters,
+MTT distillation with val_data for best-snapshot selection, expert/student
+seeding) is identical to h1_cross_arch_baseline.py.
 
 Hypothesis
 ----------
@@ -28,9 +27,13 @@ Interpretation:
 - >1.0  => degradation from synthetic training
 - higher off-diagonal => architecture bias
 
+Output
+------
+results/cross_arch_baseline_fixed.csv
+
 Run:
 ----
-python -m example.experiments.h1_cross_arch_baseline_clean
+python -m example.experiments.h1_cross_arch_baseline_fixed_budget
 """
 
 import csv
@@ -67,15 +70,15 @@ from ts_distill.evaluation.evaluation import Evaluator
 # =============================================================================
 
 #ACTIVE_DATASETS = ["ETTh1", "ETTh2", "ETTm1", "ETTm2"]
-ACTIVE_DATASETS = ["ETTh1"]
-ACTIVE_MODELS = ["MLP", "CNN"]
+ACTIVE_DATASETS = ["ETTh2", "ETTm1", "ETTm2"]
+ACTIVE_MODELS = ["DLinear","MLP", "CNN"]
 #ACTIVE_MODELS = ["MLP"]
 
 MULTI_SEED_DATASETS = {"ETTh1", "ETTh2", "ETTm1", "ETTm2"}
 
 #SEEDS_MULTI = [42, 7, 123]
-SEEDS_MULTI = [7]
-SEEDS_SINGLE = [7]
+SEEDS_MULTI = [42]
+SEEDS_SINGLE = [42]
 
 MODEL_CONFIGS = {
     "DLinear": {"individual": False},
@@ -141,7 +144,7 @@ DISTILL_CONFIG = {
     "expert_momentum": 0.9,
 
     # MTT
-    "n_distill_steps": 500,
+    "n_distill_steps": 1000,
     "n_synthetic": 384,
     "synthetic_lr": 5.0,
     "student_lr": 0.1,
@@ -149,17 +152,12 @@ DISTILL_CONFIG = {
     "snapshot_student_steps": 50,
     "trajectory_gap": 5,
 
-    # Evaluation — same protocol for both real and synthetic training,
-    # matching experiment_matrix.py so results are directly comparable.
-    # Early stopping uses the real val set as the stopping criterion even
-    # when training on synthetic data: stops when real-val loss stops improving.
-    # NOTE: experiment_matrix.py's DISTILL_CONFIG declares eval_max_epochs=300,
-    # but its __main__ block overrides this to 50 before running — 50 is what
-    # actually executes, so that's the value used here too.
-    "eval_max_epochs": 50,
+    # Evaluation — FIXED budget, no early stopping. Both real and synthetic
+    # training run for exactly eval_max_epochs epochs (no val_loader, no
+    # patience), so the only variable affecting mse_ratio is the data itself.
+    "eval_max_epochs": 300,
     "eval_lr": 0.001,
     "eval_batch_size": 32,
-    "early_stop_patience": 10,
 
     "batch_size": 64,
 }
@@ -170,7 +168,7 @@ DISTILL_CONFIG = {
 # =============================================================================
 
 RESULTS_DIR = Path(__file__).parent / "results"
-CSV_PATH = RESULTS_DIR / "cross_arch_baseline_clean.csv"
+CSV_PATH = RESULTS_DIR / "cross_arch_baseline_fixed.csv"
 
 CSV_COLUMNS = [
     "experiment",
@@ -313,14 +311,12 @@ def row_exists(dataset, expert, student, seed):
 
 
 def eval_on_real(student_name, data, cfg, device, seed):
-    """Train student on real data with early stopping; returns test MSE.
+    """Train student on real data for a FIXED budget (no early stopping);
+    returns test MSE.
 
-    Early stopping on real val loss is essential: without it, different
-    dataset sizes cause wildly different gradient-step counts (e.g. 50
-    epochs on ETTh2 = 13 250 steps → CNN overfits; 50 epochs on 384-point
-    synthetic = 350 steps → underfits). Early stopping finds the true
-    convergence point for each architecture, giving a reliable denominator
-    for mse_ratio regardless of dataset size.
+    No val_loader / patience — trains for exactly cfg['eval_max_epochs']
+    epochs regardless of dataset size or architecture, so mse_ratio reflects
+    only data quality, not convergence speed.
 
     Uses a fixed seed (0) rather than the experiment seed, matching
     experiment_matrix.py Step 4a.
@@ -352,12 +348,6 @@ def eval_on_real(student_name, data, cfg, device, seed):
             shuffle=True,
         ),
         epochs=cfg["eval_max_epochs"],
-        val_loader=TorchDataLoader(
-            data["val_data"],
-            batch_size=cfg["eval_batch_size"],
-            shuffle=False,
-        ),
-        patience=cfg["early_stop_patience"],
     )
 
     evaluator = Evaluator(
@@ -451,7 +441,8 @@ def distill_synthetic(expert_name, data, cfg, device, seed):
     )
 
     # val_data enables best-snapshot selection, matching experiment_matrix.py
-    # Step 3 (distiller.distill(..., val_data=val_data)).
+    # Step 3 (distiller.distill(..., val_data=val_data)). This is part of the
+    # distillation algorithm itself, not the fixed-budget evaluation below.
     synthetic_seq = distiller.distill(
         synthetic_init=synthetic_init,
         n_steps=cfg["n_distill_steps"],
@@ -504,10 +495,8 @@ def eval_on_synthetic(
         seq_len=data["seq_len"],
     )
 
-    # Early stopping on real val — same protocol as experiment_matrix.py.
-    # The real val set acts as the stopping criterion even though training
-    # is on synthetic data, so results are directly comparable to the
-    # real-data baseline and to other experiments using this protocol.
+    # FIXED budget — no val_loader / patience, trains for exactly
+    # cfg['eval_max_epochs'] epochs, same as eval_on_real.
     trainer.fit(
         dataloader=TorchDataLoader(
             syn_windows,
@@ -515,12 +504,6 @@ def eval_on_synthetic(
             shuffle=True,
         ),
         epochs=cfg["eval_max_epochs"],
-        val_loader=TorchDataLoader(
-            data["val_data"],
-            batch_size=cfg["eval_batch_size"],
-            shuffle=False,
-        ),
-        patience=cfg["early_stop_patience"],
     )
 
     evaluator = Evaluator(
@@ -543,7 +526,7 @@ def eval_on_synthetic(
 def run(device, cfg):
 
     print("=" * 80)
-    print("H1 CLEAN CROSS-ARCHITECTURE BASELINE")
+    print("H1 FIXED-BUDGET CROSS-ARCHITECTURE BASELINE (NO EARLY STOPPING)")
     print("=" * 80)
 
     for dataset_name in ACTIVE_DATASETS:
@@ -594,12 +577,12 @@ def run(device, cfg):
                     for student_name in ACTIVE_MODELS:
                         if not row_exists(dataset_name, expert_name, student_name, seed):
                             append_csv({
-                                "experiment":   "cross_arch_baseline_clean",
+                                "experiment":   "cross_arch_baseline_fixed",
                                 "dataset":      dataset_name,
                                 "expert_model": expert_name,
                                 "student_model": student_name,
                                 "seed":         seed,
-                                "method":       "standard_mtt_clean",
+                                "method":       "standard_mtt_fixed_budget",
                                 "notes":        f"distillation_failed: {str(exc)[:120]}",
                             })
                     continue
@@ -637,12 +620,12 @@ def run(device, cfg):
                     except Exception as exc:
                         print(f"    [FAIL] synthetic eval: {exc}")
                         append_csv({
-                            "experiment":        "cross_arch_baseline_clean",
+                            "experiment":        "cross_arch_baseline_fixed",
                             "dataset":           dataset_name,
                             "expert_model":      expert_name,
                             "student_model":     student_name,
                             "seed":              seed,
-                            "method":            "standard_mtt_clean",
+                            "method":            "standard_mtt_fixed_budget",
                             "real_mse":          real_mse,
                             "n_pairs_available": n_pairs,
                             "notes":             f"synthetic_eval_failed: {str(exc)[:120]}",
@@ -662,12 +645,12 @@ def run(device, cfg):
                     )
 
                     append_csv({
-                        "experiment":        "cross_arch_baseline_clean",
+                        "experiment":        "cross_arch_baseline_fixed",
                         "dataset":           dataset_name,
                         "expert_model":      expert_name,
                         "student_model":     student_name,
                         "seed":              seed,
-                        "method":            "standard_mtt_clean",
+                        "method":            "standard_mtt_fixed_budget",
                         "real_mse":          real_mse,
                         "transfer_mse":      transfer_mse,
                         "mse_ratio":         mse_ratio,
@@ -704,6 +687,6 @@ if __name__ == "__main__":
 
     # DISTILL_CONFIG["expert_epochs"] = 5
     # DISTILL_CONFIG["n_distill_steps"] = 10
-    # DISTILL_CONFIG["eval_epochs"] = 5
+    # DISTILL_CONFIG["eval_max_epochs"] = 5
 
     main()

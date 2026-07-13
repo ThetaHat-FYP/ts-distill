@@ -1,0 +1,14 @@
+experiment,dataset,expert_model,student_model,seed,method,phase_boundary,real_mse,transfer_mse,mse_ratio,n_pairs_available,notes
+cross_arch_phase_aware_fixed,ETTm2,MLP,MLP,42,param_mtt,,0.19573097387601823,0.23816442176651506,1.2167947517462179,81,
+cross_arch_phase_aware_fixed,ETTm2,MLP,MLP,42,phase_aware_mtt,20,0.19573097387601823,0.2568532165383453,1.312276802449487,81,
+cross_arch_phase_aware_fixed,ETTm2,MLP,CNN,42,param_mtt,,0.27266731760657625,2.848353771775343,10.44626028809639,81,
+cross_arch_phase_aware_fixed,ETTm2,MLP,CNN,42,phase_aware_mtt,20,0.27266731760657625,1.2669091595626565,4.646355018574844,81,
+cross_arch_phase_aware_fixed,ETTm2,CNN,MLP,42,param_mtt,,0.19573097387601823,29.987734917746717,153.20893941263395,81,
+cross_arch_phase_aware_fixed,ETTm2,CNN,CNN,42,param_mtt,,0.27266731760657625,4.4299035481242965,16.246551244238503,81,
+cross_arch_phase_aware_fixed,ETTm1,MLP,MLP,42,param_mtt,,0.3654227024413054,0.6762593539858952,1.8506221684311381,81,
+cross_arch_phase_aware_fixed,ETTm1,MLP,MLP,42,phase_aware_mtt,8,0.3654227024413054,0.654637518770759,1.791452787134668,81,
+
+cross_arch_phase_aware_fixed,ETTm1,DLinear,DLinear,7,param_mtt,,0.34485319430522277,0.36522033988230795,1.059060336147151,81,
+cross_arch_phase_aware_fixed,ETTm1,DLinear,DLinear,7,phase_aware_mtt,14,0.34485319430522277,0.3563310497815974,1.033283309146952,81,
+cross_arch_phase_aware_fixed,ETTm1,DLinear,MLP,7,param_mtt,,0.3654227024413054,1.0544780641408518,2.885639171009697,81,
+cross_arch_phase_aware_fixed,ETTm1,DLinear,MLP,7,phase_aware_mtt,14,0.3654227024413054,1.0796183004177546,2.9544368568374977,81,

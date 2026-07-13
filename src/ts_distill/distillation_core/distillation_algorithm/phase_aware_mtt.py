@@ -4,10 +4,17 @@ Phase-Aware MTT Distiller
 A hybrid MTT distiller that switches the outer-loop loss depending on which
 phase of the expert trajectory the sampled checkpoint pair comes from.
 
-  Early phase (start step < phase_boundary): parameter matching loss
+Each sampled (start, end) checkpoint pair must fall entirely within ONE
+phase — if start and end straddle phase_boundary (one is early, the other
+late), the pair is discarded and a new one is sampled, until both endpoints
+agree:
+
+  Early phase (start step < phase_boundary AND end step < phase_boundary):
+      parameter matching loss
       grand_loss = ||theta_student - theta_target||^2 / ||theta_start - theta_target||^2
 
-  Late phase  (start step >= phase_boundary): prediction matching loss
+  Late phase  (start step >= phase_boundary AND end step >= phase_boundary):
+      prediction matching loss
       grand_loss = ||f(X; theta_student) - f(X; theta_target)||^2
                    / ||f(X; theta_start) - f(X; theta_target)||^2
 
@@ -108,11 +115,16 @@ class PhaseAwareMTTDistiller(MTTDistiller):
         """
         Run the phase-aware MTT outer loop.
 
-        For each distillation step the sampled checkpoint pair's starting step
-        is compared against phase_boundary:
-          - start step < phase_boundary  =>  parameter matching loss
-          - start step >= phase_boundary =>  prediction matching loss
-          - phase_boundary is None       =>  always parameter matching
+        For each distillation step, a checkpoint pair (start, end) is sampled
+        and re-drawn until both checkpoints fall in the SAME phase relative to
+        phase_boundary:
+          - start step < phase_boundary AND end step < phase_boundary
+                => early phase => parameter matching loss (standard MTT)
+          - start step >= phase_boundary AND end step >= phase_boundary
+                => late phase  => prediction matching loss
+          - a pair that straddles phase_boundary (start in early, end in late)
+                is discarded and a new pair is sampled
+          - phase_boundary is None => always parameter matching (no resampling)
 
         Args / Returns: same as MTTDistiller.distill().
         """
@@ -146,9 +158,30 @@ class PhaseAwareMTTDistiller(MTTDistiller):
             optimizer_img.zero_grad()
 
             # ── Step 1: Sample expert trajectory segment ──────────────────────
-            start_ckpt, end_ckpt = self.expert_recorder.sample_checkpoint_pair(
-                step_gap=self.expert_epochs
-            )
+            # Re-sample until both checkpoints fall in the same phase relative
+            # to phase_boundary — a pair straddling the boundary is ambiguous
+            # (neither purely "early" nor purely "late") and is discarded.
+            if self.phase_boundary is None:
+                start_ckpt, end_ckpt = self.expert_recorder.sample_checkpoint_pair(
+                    step_gap=self.expert_epochs
+                )
+                is_late_phase = False
+            else:
+                for _attempt in range(1000):
+                    start_ckpt, end_ckpt = self.expert_recorder.sample_checkpoint_pair(
+                        step_gap=self.expert_epochs
+                    )
+                    start_is_late = start_ckpt["step"] >= self.phase_boundary
+                    end_is_late   = end_ckpt["step"]   >= self.phase_boundary
+                    if start_is_late == end_is_late:
+                        is_late_phase = start_is_late
+                        break
+                else:
+                    # Could not find a same-phase pair after many attempts
+                    # (e.g. trajectory too short) — fall back to the
+                    # start checkpoint's phase rather than looping forever.
+                    is_late_phase = start_is_late
+
             expert_start_weights = start_ckpt["weights"]
             expert_end_weights   = end_ckpt["weights"]
 
@@ -163,11 +196,7 @@ class PhaseAwareMTTDistiller(MTTDistiller):
             )
 
             # ── Step 4: Decide which loss to apply ────────────────────────────
-            is_late_phase = (
-                self.phase_boundary is not None
-                and start_ckpt["step"] >= self.phase_boundary
-            )
-
+            # is_late_phase was determined in Step 1 from the (same-phase) pair.
             if is_late_phase:
                 grand_loss = self._prediction_matching_loss(
                     student_model        = student_model,

@@ -713,8 +713,8 @@ if __name__ == '__main__':
    
      # Full matrix run — produces metrics_main.csv and metrics_feature_wise.csv.
     # Edit ACTIVE_DATASETS and ACTIVE_MODELS at the top of the file to control scope.
-    ACTIVE_DATASETS[:] = ['ETTm2']
-    ACTIVE_MODELS[:]   = ['CNN']
+    ACTIVE_DATASETS[:] = ['ETTh1']
+    ACTIVE_MODELS[:]   = ['DLinear']
     DISTILL_CONFIG['n_distill_steps'] = 300
     DISTILL_CONFIG['expert_epochs']   = 80
     DISTILL_CONFIG['eval_max_epochs'] = 50
