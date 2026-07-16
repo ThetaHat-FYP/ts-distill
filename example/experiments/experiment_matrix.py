@@ -69,6 +69,14 @@ from ts_distill.distillation_core.initializer.random_sample_initializer import R
 from ts_distill.distillation_core.initializer.geommetry_sequence_initializer import GeometrySequenceInitializer
 from ts_distill.distillation_core.initializer.uncertainty_sequence_initializer import UncertaintySampleInitializer
 
+# Maps a short initializer key (used by --initializer and the convergence-speed
+# runner scripts) to the initializer class that implements it.
+INITIALIZER_REGISTRY = {
+    'random':      RandomSampleInitializer,
+    'geo':         GeometrySequenceInitializer,
+    'uncertainty': UncertaintySampleInitializer,
+}
+
 # ── Framework — training ──────────────────────────────────────────────────────
 from ts_distill.trainer.trainer.trainer import Trainer
 from ts_distill.trainer.callback.simple_callback import SimpleCallback
@@ -96,14 +104,32 @@ from ts_distill.evaluation.hybrid_evaluation.hybrid import (
 
 # Datasets to evaluate.
 # Remove entries you don't have CSV files for.
-ACTIVE_DATASETS = ['ETTh1', 'ETTh2', 'ETTm1', 'ETTm2']
+ACTIVE_DATASETS = ['ETTh1','ETTh2','ETTm1','ETTm2']
 
 # Models to evaluate against each dataset.
-ACTIVE_MODELS = ['DLinear', 'LSTM', 'MLP', 'CNN']
+ACTIVE_MODELS = ['DLinear','MLP','CNN']
+
+# Initializer strategy for run_single_experiment. Key into INITIALIZER_REGISTRY:
+# 'random', 'geo', or 'uncertainty'. Override with --initializer on the CLI.
+ACTIVE_INITIALIZER = 'random'
+
+# Seed used by --mode matrix (main()). Run once per seed in (7, 42, 123) to
+# match the fixed-variables requirement, alongside ACTIVE_INITIALIZER.
+# Override with --seed on the CLI.
+MATRIX_SEED = 7
 
 # Distillation method label written to the result tables.
 # Update this when you add temporal-aware losses in Stage 4.
 DISTILLATION_METHOD = 'MTT'
+
+# Seed used by --mode convergence (run_convergence_matrix). All step counts and
+# (dataset, model) pairs share this seed so expert trajectories are comparable.
+CONVERGENCE_SEED = 7
+
+# Distillation-step checkpoints recorded by --mode convergence. This is the
+# x-axis of the downstream-MSE-vs-steps curve used for the AUC comparison
+# across initializer strategies (see distillation_core/initializer/convergence_speed/).
+CONVERGENCE_STEP_COUNTS = [0, 100, 200, 300, 400, 500, 600]
 
 # Set False to skip temporal metric computation and CSV saving.
 # Useful for quick sanity checks that don't need statsmodels.
@@ -233,7 +259,7 @@ DISTILL_CONFIG = {
     'expert_epochs':         80,
     'expert_lr':           0.01,
     'expert_momentum':      0.9,
-    'n_distill_steps':      300,
+    'n_distill_steps':      600,
     'n_synthetic':          384,    # synthetic sequence length (timesteps)
     'synthetic_lr':         5.0,
     'student_lr':          0.01,
@@ -291,6 +317,8 @@ def run_single_experiment(
     cfg:                   dict,
     compute_metrics:       bool = True,
     compute_hybrid_mixing: bool = False,
+    initializer_name:      str = 'uncertainty',
+    seed:                  int = 123,
 ) -> tuple:
     """
     Run the full MTT pipeline for one (dataset, model) combination.
@@ -302,6 +330,10 @@ def run_single_experiment(
         compute_metrics       (bool): When False, skip temporal metrics.
         compute_hybrid_mixing (bool): When True, run hybrid mixing evaluation across
                                       HYBRID_MIXING_RATIOS and return results.
+        initializer_name      (str):  Key in INITIALIZER_REGISTRY, e.g. 'random',
+                                      'geo', 'uncertainty'.
+        seed                  (int):  Seed for torch.manual_seed before expert
+                                      training and initializer sampling.
 
     Returns:
         Tuple[List[Dict], Dict, Optional[Dict]]: (feature_rows, main_row, hybrid_row)
@@ -309,7 +341,7 @@ def run_single_experiment(
             main_row     — aggregate result dict.
             hybrid_row   — {dataset, model, hybrid_<r>_mse, ...} or None.
     """
-    torch.manual_seed(123)
+    torch.manual_seed(seed)
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     # ── Resolve per-dataset overrides ─────────────────────────────────────────
@@ -374,14 +406,10 @@ def run_single_experiment(
         dataloader = expert_loader,
         epochs     = cfg['expert_epochs'],
         callbacks  = [recorder, SimpleCallback()],
-    )
+    )   
 
-    # ── Step 3: Distil synthetic sequence ─────────────────────────────────────
-    # initializer    = RandomSampleInitializer()
-    # synthetic_init = initializer.initialize_sequence(raw_train_data, cfg['n_synthetic'])
-    # initializer    = GeometrySequenceInitializer()
-    # synthetic_init = initializer.initialize_sequence(raw_train_data,cfg['n_synthetic'])
-    initializer = UncertaintySampleInitializer()
+    # ── Step 3: Distil synthetic sequence ───
+    initializer    = INITIALIZER_REGISTRY[initializer_name]()
     synthetic_init = initializer.initialize_sequence(raw_train_data, cfg['n_synthetic'])
 
     distiller = MTTDistiller(
@@ -507,6 +535,8 @@ def run_single_experiment(
             'dataset':             dataset_name,
             'model':               model_name,
             'distillation_method': DISTILLATION_METHOD,
+            'initializer':         initializer_name,
+            'seed':                seed,
             'n_distill_steps':     cfg['n_distill_steps'],
             'real_mse':            real_mse,
             'transfer_mse':        transfer_mse,
@@ -566,26 +596,31 @@ def save_results(
         pd.DataFrame(main_rows)[MetricAggregator.MAIN_COLUMNS].to_csv(
             main_path, index=False
         )
-        print(f"\nMain table saved    → {main_path}")
+        print(f"\nMain table saved    -> {main_path}")
 
     if feature_rows:
         pd.DataFrame(feature_rows)[MetricAggregator.FEATURE_COLUMNS].to_csv(
             feature_path, index=False
         )
-        print(f"Feature table saved → {feature_path}")
+        print(f"Feature table saved -> {feature_path}")
 
 
-def save_mse_results(main_rows: list, results_dir: Path) -> None:
-    """Write real_mse and synthetic_mse for every completed (dataset, model) run."""
+def save_mse_results(main_rows: list, results_dir: Path, initializer_name: str, seed: int) -> None:
+    """
+    Write real_mse and synthetic_mse for every completed (dataset, model) run to
+    results/{initializer_name}_metrics_mse_seed{seed}.csv — one file per
+    (initializer, seed) pair so different strategies/seeds never overwrite or
+    shadow each other.
+    """
     if not main_rows:
         return
     results_dir.mkdir(parents=True, exist_ok=True)
-    path = results_dir / 'metrics_mse.csv'
-    cols = ['dataset', 'model', 'distillation_method', 'real_mse', 'transfer_mse']
+    path = results_dir / f'{initializer_name}_metrics_mse_seed{seed}.csv'
+    cols = ['dataset', 'model', 'distillation_method', 'initializer', 'seed', 'real_mse', 'transfer_mse']
     pd.DataFrame(main_rows)[cols].rename(
         columns={'transfer_mse': 'synthetic_mse'}
     ).to_csv(path, index=False)
-    print(f"MSE table saved     → {path}")
+    print(f"MSE table saved     -> {path}")
 
 
 def save_hybrid_results(hybrid_rows: list, results_dir: Path) -> None:
@@ -601,7 +636,7 @@ def save_hybrid_results(hybrid_rows: list, results_dir: Path) -> None:
         key=lambda c: int(c.split('_')[1]),
     )
     pd.DataFrame(hybrid_rows)[id_cols + ratio_cols].to_csv(path, index=False)
-    print(f"Hybrid table saved  → {path}")
+    print(f"Hybrid table saved  -> {path}")
 
 
 # =============================================================================
@@ -609,25 +644,40 @@ def save_hybrid_results(hybrid_rows: list, results_dir: Path) -> None:
 # =============================================================================
 
 def run_budget_sensitivity(
-    dataset_name: str,
-    model_name:   str,
-    step_counts:  list,
-    results_dir:  Path,
-) -> None:
+    dataset_name:     str,
+    model_name:       str,
+    step_counts:      list,
+    results_dir:      Path,
+    initializer_name: str = 'uncertainty',
+    seed:             int = 123,
+    compute_metrics:  bool = False,
+    output_name:      str = None,
+) -> pd.DataFrame:
     """
     Run the same (dataset, model) at multiple distillation step counts and save
-    results to metrics_budget_sensitivity.csv.
+    a steps-vs-MSE table — the data needed for a convergence-speed AUC curve.
 
-    Because torch.manual_seed(42) is called inside run_single_experiment, every
-    step count gets an identical expert trajectory and identical initialization —
-    only the distillation budget differs.  This makes the comparison clean.
+    Because the same `seed` is used for every step count, each run gets an
+    identical expert trajectory and identical initializer sample — only the
+    distillation budget differs. This makes the comparison clean.
 
     Args:
-        dataset_name (str):  E.g. 'ETTh1'.
-        model_name   (str):  E.g. 'DLinear'.
-        step_counts  (list): List of int step counts, e.g. [0, 50, 100, 150, 200, 250, 300].
-                             0 = pure initialization baseline (no MTT optimization).
-        results_dir  (Path): Directory to write metrics_budget_sensitivity.csv into.
+        dataset_name     (str):  E.g. 'ETTh1'.
+        model_name       (str):  E.g. 'DLinear'.
+        step_counts      (list): List of int step counts, e.g. [0, 100, 200, ..., 600].
+                                 0 = pure initialization baseline (no MTT optimization).
+        results_dir      (Path): Directory to write the CSV into.
+        initializer_name (str):  Key in INITIALIZER_REGISTRY, e.g. 'random'.
+        seed             (int):  Seed passed to run_single_experiment.
+        compute_metrics  (bool): When True, also compute+save the heavier ACF/FFT
+                                 temporal metrics (metrics_budget_sensitivity_feature.csv).
+                                 Not needed for AUC, which only uses transfer_mse.
+        output_name      (str):  CSV filename to write under results_dir. Defaults to
+                                 f'{initializer_name}_convergence_{dataset_name}_{model_name}_seed{seed}.csv'.
+
+    Returns:
+        pd.DataFrame: One row per step count with columns
+            [dataset, model, distillation_method, seed, n_distill_steps, real_mse, transfer_mse].
     """
     all_main     = []
     all_features = []
@@ -635,7 +685,7 @@ def run_budget_sensitivity(
 
     for i, n_steps in enumerate(step_counts, 1):
         print(f"\n{'=' * 70}")
-        print(f"[{i}/{total}]  {dataset_name}  x  {model_name}  —  n_steps={n_steps}")
+        print(f"[{i}/{total}]  {dataset_name}  x  {model_name}  x  {initializer_name}  —  n_steps={n_steps}")
         print(f"{'=' * 70}")
         try:
             cfg = {**DISTILL_CONFIG, 'n_distill_steps': n_steps}
@@ -643,41 +693,90 @@ def run_budget_sensitivity(
                 dataset_name          = dataset_name,
                 model_name            = model_name,
                 cfg                   = cfg,
-                compute_metrics       = True,
+                compute_metrics       = compute_metrics,
                 compute_hybrid_mixing = False,
+                initializer_name      = initializer_name,
+                seed                  = seed,
             )
+            main_row['seed'] = seed
             all_main.append(main_row)
             all_features.extend(feature_rows)
-            print(
-                f"\n  steps={n_steps}  transfer_mse={main_row['transfer_mse']:.6f}  "
-                f"acf_short={main_row['acf_short']:.4f}  acf_long={main_row['acf_long']:.4f}  "
-                f"fft_distance={main_row['fft_distance']:.4f}  trend_error={main_row['trend_error']:.4f}"
-            )
+            msg = f"\n  steps={n_steps}  transfer_mse={main_row['transfer_mse']:.6f}"
+            if compute_metrics:
+                msg += (
+                    f"  acf_short={main_row['acf_short']:.4f}  acf_long={main_row['acf_long']:.4f}  "
+                    f"fft_distance={main_row['fft_distance']:.4f}  trend_error={main_row['trend_error']:.4f}"
+                )
+            print(msg)
         except Exception as exc:
             print(f"\n  [SKIP] n_steps={n_steps} failed: {exc}")
             continue
 
     results_dir.mkdir(parents=True, exist_ok=True)
+    main_df = pd.DataFrame()
     if all_main:
-        pd.DataFrame(all_main)[MetricAggregator.MAIN_COLUMNS].to_csv(
-            results_dir / 'metrics_budget_sensitivity.csv', index=False
-        )
-        print(f"\nBudget sensitivity saved → {results_dir / 'metrics_budget_sensitivity.csv'}")
-    if all_features:
+        name = output_name or f'{initializer_name}_convergence_{dataset_name}_{model_name}_seed{seed}.csv'
+        cols = (MetricAggregator.MAIN_COLUMNS if compute_metrics else
+                ['dataset', 'model', 'distillation_method', 'seed', 'n_distill_steps', 'real_mse', 'transfer_mse'])
+        main_df = pd.DataFrame(all_main)[cols]
+        main_df.to_csv(results_dir / name, index=False)
+        print(f"\nBudget sensitivity saved -> {results_dir / name}")
+    if compute_metrics and all_features:
+        feature_name = (output_name or f'{initializer_name}_{dataset_name}_{model_name}_seed{seed}').replace('.csv', '') + '_feature.csv'
         pd.DataFrame(all_features)[MetricAggregator.FEATURE_COLUMNS].to_csv(
-            results_dir / 'metrics_budget_sensitivity_feature.csv', index=False
+            results_dir / feature_name, index=False
         )
-        print(f"Budget feature table    → {results_dir / 'metrics_budget_sensitivity_feature.csv'}")
+        print(f"Budget feature table    -> {results_dir / feature_name}")
+
+    return main_df
+
+
+def run_convergence_matrix() -> None:
+    """
+    Convergence-speed sweep: loop over ACTIVE_DATASETS × ACTIVE_MODELS, running
+    run_budget_sensitivity for each pair with ACTIVE_INITIALIZER and
+    CONVERGENCE_SEED. Writes one steps-vs-MSE CSV per (dataset, model) pair to
+    results/{ACTIVE_INITIALIZER}_convergence_{dataset}_{model}_seed{CONVERGENCE_SEED}.csv.
+
+    After running this, use the matching *_curve.py script under
+    ts_distill/distillation_core/initializer/convergence_speed/ (random_curve.py,
+    geo_curve.py, uncertainty_curve.py) to compute the AUC and plot the curve
+    for the strategy you just ran.
+    """
+    results_dir = Path(__file__).parent / 'results'
+    total = len(ACTIVE_DATASETS) * len(ACTIVE_MODELS)
+    done  = 0
+
+    for dataset_name in ACTIVE_DATASETS:
+        for model_name in ACTIVE_MODELS:
+            done += 1
+            print(f"\n{'=' * 70}")
+            print(f"[{done}/{total}]  {dataset_name}  x  {model_name}  x  {ACTIVE_INITIALIZER}  (convergence sweep)")
+            print(f"{'=' * 70}")
+            run_budget_sensitivity(
+                dataset_name     = dataset_name,
+                model_name       = model_name,
+                step_counts      = CONVERGENCE_STEP_COUNTS,
+                results_dir      = results_dir,
+                initializer_name = ACTIVE_INITIALIZER,
+                seed             = CONVERGENCE_SEED,
+            )
+
+    print(f"\nConvergence matrix complete. {total} (dataset, model) combination(s) processed.")
 
 
 def main() -> None:
     """
-    Loop over ACTIVE_DATASETS × ACTIVE_MODELS.  Saves metrics_mse.csv after
-    every successful run; skips already-completed pairs so interrupted runs
-    can be resumed by re-running the same command.
+    Loop over ACTIVE_DATASETS × ACTIVE_MODELS.  Saves
+    results/{ACTIVE_INITIALIZER}_metrics_mse_seed{MATRIX_SEED}.csv after every
+    successful run; skips already-completed pairs so interrupted runs can be
+    resumed by re-running the same command. The file is named after both
+    ACTIVE_INITIALIZER and MATRIX_SEED so switching either and re-running never
+    overwrites or "skips" a pair that was actually completed under a different
+    strategy/seed.
     """
     results_dir = Path(__file__).parent / 'results'
-    mse_path    = results_dir / 'metrics_mse.csv'
+    mse_path    = results_dir / f'{ACTIVE_INITIALIZER}_metrics_mse_seed{MATRIX_SEED}.csv'
 
     # Load any previous results so we can resume mid-matrix
     all_main: list = []
@@ -715,6 +814,8 @@ def main() -> None:
                     cfg                   = DISTILL_CONFIG,
                     compute_metrics       = COMPUTE_METRICS,
                     compute_hybrid_mixing = COMPUTE_HYBRID_MIXING,
+                    initializer_name      = ACTIVE_INITIALIZER,
+                    seed                  = MATRIX_SEED,
                 )
                 all_main.append(main_row)
                 all_features.extend(feature_rows)
@@ -722,7 +823,7 @@ def main() -> None:
                     all_hybrid.append(hybrid_row)
 
                 # Always save MSE results after each run
-                save_mse_results(all_main, results_dir)
+                save_mse_results(all_main, results_dir, ACTIVE_INITIALIZER, MATRIX_SEED)
                 print(
                     f"\n  real_mse={main_row['real_mse']:.6f}  "
                     f"synthetic_mse={main_row['transfer_mse']:.6f}"
@@ -755,11 +856,42 @@ if __name__ == '__main__':
         default='all',
         help='Single model to run, or "all" for every model (default: all)',
     )
+    parser.add_argument(
+        '--initializer',
+        choices=list(INITIALIZER_REGISTRY.keys()),
+        default=ACTIVE_INITIALIZER,
+        help=f"Initializer strategy to use (default: {ACTIVE_INITIALIZER})",
+    )
+    parser.add_argument(
+        '--mode',
+        choices=['matrix', 'convergence'],
+        default='matrix',
+        help="'matrix' runs the standard full-matrix pipeline (default); "
+             "'convergence' runs the steps-vs-MSE sweep (CONVERGENCE_STEP_COUNTS) "
+             "for AUC / convergence-speed analysis — see distillation_core/"
+             "initializer/convergence_speed/ for the AUC + plotting scripts.",
+    )
+    parser.add_argument(
+        '--seed',
+        type=int,
+        default=None,
+        help="Seed to use. Overrides MATRIX_SEED in --mode matrix, or "
+             "CONVERGENCE_SEED in --mode convergence. Defaults to whichever "
+             "constant applies to the selected --mode.",
+    )
     args = parser.parse_args()
 
     if args.dataset != 'all':
         ACTIVE_DATASETS[:] = [args.dataset]
     if args.model != 'all':
         ACTIVE_MODELS[:] = [args.model]
+    ACTIVE_INITIALIZER = args.initializer
 
-    main()
+    if args.mode == 'convergence':
+        if args.seed is not None:
+            CONVERGENCE_SEED = args.seed
+        run_convergence_matrix()
+    else:
+        if args.seed is not None:
+            MATRIX_SEED = args.seed
+        main()
