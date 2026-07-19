@@ -129,7 +129,7 @@ CONFIG = {
     'expert_momentum': 0.9,
 
     # ── Distillation loop ─────────────────────────────────────────────────────
-    'n_distill_steps':       300,  # Outer-loop iterations (matches HDT paper)
+    'n_distill_steps':       1,  # Outer-loop iterations (matches HDT paper)
     'n_synthetic':            384,  # Length of the synthetic continuous sequence
     'synthetic_lr':           0.1,  # Learning rate for the synthetic sequence tensor
     'student_lr':            0.01,  # Inner-loop student learning rate
@@ -302,6 +302,12 @@ def main():
     # Reset random seed to ensure the real-data model baseline is identical 
     # regardless of how many random numbers were consumed in Step 3.
     torch.manual_seed(42)
+
+     # Shared val loader — early-stopping signal for BOTH models so convergence
+    # is measured against the same real validation distribution.
+    eval_val_loader = TorchDataLoader(
+        val_data, batch_size=CONFIG['eval_batch_size'], shuffle=False
+    )
 
     # -- 4a. Train on full real data (with early stopping on the val set) -----
     real_model   = make_model()

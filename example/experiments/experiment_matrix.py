@@ -81,6 +81,9 @@ from ts_distill.evaluation.evaluation import Evaluator
 # ── Framework — temporal metrics (new module) ─────────────────────────────────
 from ts_distill.metrics.aggregator import MetricAggregator
 
+# ── Framework — post-processing (FFT amplitude post-fix) ──────────────────────
+from ts_distill.post_processing import FFTAmplitudePostFix
+
 # ── Framework — hybrid mixing evaluation ──────────────────────────────────────
 from ts_distill.evaluation.hybrid_evaluation.hybrid import (
     BaseHybridEvaluator,
@@ -105,7 +108,7 @@ DISTILLATION_METHOD = 'MTT'
 
 # Set False to skip temporal metric computation and CSV saving.
 # Useful for quick sanity checks that don't need statsmodels.
-COMPUTE_METRICS = False
+COMPUTE_METRICS = True
 
 # Set True to run the hybrid mixing evaluation: trains a model on a mixture of
 # synthetic + real data at each ratio in HYBRID_MIXING_RATIOS and records MSE.
@@ -212,7 +215,7 @@ DATASET_CONFIGS = {
 
 MODEL_CONFIGS = {
     'DLinear': {'individual': False},
-    'LSTM':    {'hidden_dim': 16, 'num_layer': 1},
+    'LSTM':    {'hidden_dim': 64, 'num_layer': 1},
     'MLP':     {},
     'CNN':     {},
 }
@@ -233,9 +236,9 @@ DISTILL_CONFIG = {
     'expert_momentum':      0.9,
     'n_distill_steps':      300,
     'n_synthetic':          384,    # synthetic sequence length (timesteps)
-    'synthetic_lr':         5.0,
-    'student_lr':          0.01,
-    'student_steps':         20,
+    'synthetic_lr':         0.01,   # 5
+    'student_lr':          0.01,    # 0.5
+    'student_steps':         50,
     'snapshot_student_steps': 50,
     'batch_size':            64,
     'trajectory_gap':         5,
@@ -398,6 +401,22 @@ def run_single_experiment(
         n_steps        = cfg['n_distill_steps'],
         val_data       = val_data,
     )
+
+# ── POST-FIX + VIZ (remove this whole block to disable) ───────────────
+    from ts_distill.post_processing import FFTAmplitudePostFix
+    from example.experiments.plot_postfix import plot_before_after
+
+    syn_before = synthetic_sequence.detach().clone()          # keep raw distilled
+    syn_after  = torch.tensor(
+        FFTAmplitudePostFix(alpha=0.5).apply(synthetic_sequence, raw_train_data),
+        dtype=torch.float32,
+    )
+    plot_before_after(syn_before, syn_after, raw_train_data,
+                    dataset_name, model_name, results_dir=Path(__file__).parent / 'results')
+
+    synthetic_sequence = syn_after   # feed post-fixed data into evaluation
+    # ──────────────────────────────────────────────────────────────────────
+    
 
     # Shared val loader — early-stopping signal for BOTH models so convergence
     # is measured against the same real validation distribution.
@@ -586,6 +605,257 @@ def save_hybrid_results(hybrid_rows: list, results_dir: Path) -> None:
 
 
 # =============================================================================
+# POST-FIX ALPHA SWEEP  (manual, appendable, CPU-friendly)
+# =============================================================================
+
+# Column order for the appendable post-fix CSVs: seed + alpha are added around
+# the standard aggregator columns so the tables are self-describing.
+POSTFIX_MAIN_COLUMNS = (
+    ['seed'] + MetricAggregator.MAIN_COLUMNS[:4] + ['alpha'] + MetricAggregator.MAIN_COLUMNS[4:]
+)
+POSTFIX_FEATURE_COLUMNS = (
+    ['seed'] + MetricAggregator.FEATURE_COLUMNS[:5] + ['alpha'] + MetricAggregator.FEATURE_COLUMNS[5:]
+)
+
+
+def _append_dedup(csv_path: Path, new_rows: list, key_cols: list, columns: list) -> int:
+    """
+    Append rows to a CSV, replacing any existing rows that share the same key.
+
+    This makes manual incremental runs safe: re-running the same
+    (seed, dataset, model, n_distill_steps, alpha) overwrites those rows instead
+    of duplicating them, while rows from other datasets/models/seeds are kept.
+
+    Args:
+        csv_path (Path): Target CSV (created if absent).
+        new_rows (list): List of row dicts to append.
+        key_cols (list): Columns whose combined value identifies a unique row.
+        columns  (list): Full column order to enforce in the output CSV.
+
+    Returns:
+        int: Number of rows written this call.
+    """
+    if not new_rows:
+        return 0
+
+    df_new = pd.DataFrame(new_rows)[columns]
+
+    if csv_path.exists():
+        df_old = pd.read_csv(csv_path)
+        # String-compare keys so 0 vs 0.0 (alpha) and int vs str never mismatch.
+        incoming = set(map(tuple, df_new[key_cols].astype(str).values))
+        keep     = ~df_old[key_cols].astype(str).apply(tuple, axis=1).isin(incoming)
+        df_out   = pd.concat([df_old[keep], df_new], ignore_index=True)
+    else:
+        df_out = df_new
+
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    sort_cols = [c for c in ['model', 'dataset', 'seed', 'alpha'] if c in df_out.columns]
+    df_out = df_out.sort_values(sort_cols).reset_index(drop=True)
+    df_out.to_csv(csv_path, index=False)
+    return len(df_new)
+
+
+def run_postfix_experiment(
+    dataset_name: str,
+    model_name:   str,
+    cfg:          dict,
+    seed:         int,
+    alpha_grid:   list,
+    results_dir:  Path,
+) -> None:
+    """
+    Distil ONCE for (dataset, model, seed), then sweep FFT post-fix alpha values.
+
+    For each alpha the synthetic sequence is post-processed, a fresh probe model
+    is trained on it, and transfer_mse plus the nine temporal metrics are
+    recorded.  Because post-fix is post-hoc, distillation runs only once — the
+    alpha loop only retrains the (cheap) probe.
+
+    Rows are APPENDED to results/postfix_sweep.csv (+ _feature.csv).  Re-running
+    the same (seed, dataset, model, n_distill_steps, alpha) REPLACES those rows,
+    so accidental re-runs are safe.  Change DATASET/MODEL/SEED at the bottom of
+    this file and re-run — new rows append without overwriting previous ones.
+
+    The expert trajectory is cached to results/expert_cache/ so that re-running a
+    combination (e.g. to add more alphas) skips the expensive expert training.
+
+    Args:
+        dataset_name (str):  Key in DATASET_CONFIGS, e.g. 'ETTh1'.
+        model_name   (str):  Key in MODEL_CONFIGS,  e.g. 'DLinear'.
+        cfg          (dict): Merged distillation/eval hyperparameters.
+        seed         (int):  Controls expert, synthetic-init, and probe RNG.
+        alpha_grid   (list): Post-fix blend strengths, e.g. [0.0, 0.1, ..., 1.0].
+                             alpha=0.0 is the distill-only baseline (no post-fix).
+        results_dir  (Path): Directory for the CSVs and the expert cache.
+    """
+    torch.manual_seed(seed)
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    # ── Resolve per-dataset overrides ─────────────────────────────────────────
+    dataset_cfg = DATASET_CONFIGS[dataset_name]
+    seq_len     = dataset_cfg.get('seq_len',     cfg['seq_len'])
+    pred_len    = dataset_cfg.get('pred_len',    cfg['pred_len'])
+    in_features = dataset_cfg.get('in_features', cfg['in_features'])
+    window_size = seq_len + pred_len
+    make_model  = _make_model_factory(
+        model_name, {**cfg, 'seq_len': seq_len, 'pred_len': pred_len, 'in_features': in_features}
+    )
+
+    # ── Step 1: Load and normalise data ───────────────────────────────────────
+    csv_path = dataset_cfg['csv_path']
+    if not Path(csv_path).exists():
+        raise FileNotFoundError(f"CSV not found at '{csv_path}'.")
+    df_raw = pd.read_csv(csv_path)
+    values = df_raw.iloc[:, 1:].values.astype(np.float32)
+
+    train_start, train_end, val_start, val_end, test_start, test_end = get_data_splits(
+        values=values, window_size=window_size, seq_len=seq_len, dataset_cfg=dataset_cfg
+    )
+    scaler = StandardScaler()
+    scaler.fit(values[train_start:train_end])
+    data = scaler.transform(values)
+
+    train_data     = torch.tensor(make_windows(data[train_start:train_end], window_size), dtype=torch.float32)
+    val_data       = torch.tensor(make_windows(data[val_start:val_end],     window_size), dtype=torch.float32)
+    test_data      = torch.tensor(make_windows(data[test_start:test_end],   window_size), dtype=torch.float32)
+    raw_train_data = torch.tensor(data[train_start:train_end], dtype=torch.float32)
+    real_np        = raw_train_data.detach().cpu().numpy()
+
+    eval_val_loader = TorchDataLoader(val_data, batch_size=cfg['eval_batch_size'], shuffle=False)
+
+    # ── Step 2: Train expert (cached) ─────────────────────────────────────────
+    cache_dir  = results_dir / 'expert_cache'
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_file = cache_dir / f"expert_{dataset_name}_{model_name}_seed{seed}_ep{cfg['expert_epochs']}.pt"
+
+    recorder = SimpleRecorder(record_every=1)
+    if cache_file.exists():
+        recorder.load_buffer(str(cache_file))
+    else:
+        expert_model = make_model()
+        Trainer(
+            model     = expert_model,
+            optimizer = torch.optim.SGD(
+                expert_model.parameters(), lr=cfg['expert_lr'], momentum=cfg['expert_momentum']
+            ),
+            criterion = torch.nn.MSELoss(),
+            device    = device,
+            seq_len   = seq_len,
+        ).fit(
+            dataloader = MiniBatchLoader(train_data, batch_size=cfg['batch_size']),
+            epochs     = cfg['expert_epochs'],
+            callbacks  = [recorder, SimpleCallback()],
+        )
+        recorder.save_buffer(str(cache_file))
+
+    # ── Step 3: Distil ONCE ───────────────────────────────────────────────────
+    initializer    = RandomSampleInitializer()
+    synthetic_init = initializer.initialize_sequence(raw_train_data, cfg['n_synthetic'])
+    distiller = MTTDistiller(
+        initializer            = initializer,
+        matcher                = MSEMatcher(),
+        model_factory          = make_model,
+        expert_recorder        = recorder,
+        expert_epochs          = cfg['trajectory_gap'],
+        syn_batch_size         = cfg['batch_size'],
+        synthetic_lr           = cfg['synthetic_lr'],
+        student_lr             = cfg['student_lr'],
+        student_steps          = cfg['student_steps'],
+        snapshot_student_steps = cfg['snapshot_student_steps'],
+        seq_len                = seq_len,
+        pred_len               = pred_len,
+    )
+    synthetic_distilled = distiller.distill(
+        synthetic_init = synthetic_init,
+        n_steps        = cfg['n_distill_steps'],
+        val_data       = val_data,
+    )
+    syn_distilled_np = synthetic_distilled.detach().cpu().numpy()
+
+    # ── Step 4: Real-data baseline (trained once, reused for every alpha) ──────
+    torch.manual_seed(seed + 100)
+    real_model = make_model()
+    Trainer(
+        model     = real_model,
+        optimizer = torch.optim.Adam(real_model.parameters(), lr=cfg['eval_lr']),
+        criterion = torch.nn.MSELoss(),
+        device    = device,
+        seq_len   = seq_len,
+    ).fit(
+        dataloader = TorchDataLoader(train_data, batch_size=cfg['eval_batch_size'], shuffle=True),
+        epochs     = cfg['eval_max_epochs'],
+        val_loader = eval_val_loader,
+        patience   = cfg['early_stop_patience'],
+    )
+    evaluator = Evaluator(seq_len=seq_len, batch_size=cfg['eval_batch_size'])
+    real_mse  = evaluator.test_on_real(real_model, test_data.to(device))['MSE']
+
+    # ── Metric setup ──────────────────────────────────────────────────────────
+    period     = DATASET_PERIODS[dataset_name]
+    n_lags     = min(max(2 * period, cfg['acf_n_lags']), cfg['n_synthetic'] - 1)
+    aggregator = MetricAggregator(period=period, n_lags=n_lags)
+
+    # ── Step 5: Sweep alpha (post-fix + probe eval + metrics) ─────────────────
+    print(f"\n{'=' * 70}")
+    print(f"POST-FIX SWEEP  seed={seed}  {dataset_name} × {model_name}  "
+          f"steps={cfg['n_distill_steps']}  real_mse={real_mse:.6f}")
+    print(f"{'=' * 70}")
+    print(f"{'alpha':>6}  {'transfer_mse':>14}  {'fft_distance':>14}  "
+          f"{'freq_rank_err':>14}  {'acf_short':>10}")
+    print("-" * 70)
+
+    main_rows, feature_rows_all = [], []
+    for i, alpha in enumerate(alpha_grid):
+        if alpha == 0.0:
+            syn_fixed_np = syn_distilled_np
+        else:
+            syn_fixed_np = FFTAmplitudePostFix(alpha=alpha).apply(syn_distilled_np, real_np)
+
+        syn_windows = torch.tensor(make_windows(syn_fixed_np, window_size), dtype=torch.float32)
+        torch.manual_seed(seed + 200 + i)
+        probe = make_model()
+        Trainer(
+            model     = probe,
+            optimizer = torch.optim.Adam(probe.parameters(), lr=cfg['eval_lr']),
+            criterion = torch.nn.MSELoss(),
+            device    = device,
+            seq_len   = seq_len,
+        ).fit(
+            dataloader = TorchDataLoader(syn_windows, batch_size=cfg['eval_batch_size'], shuffle=True),
+            epochs     = cfg['eval_max_epochs'],
+            val_loader = eval_val_loader,
+            patience   = cfg['early_stop_patience'],
+        )
+        transfer_mse = evaluator.test_on_real(probe, test_data.to(device))['MSE']
+
+        feat_rows, main_row = aggregator.compute_all(
+            real                = real_np,
+            synthetic           = syn_fixed_np,
+            real_mse            = real_mse,
+            transfer_mse        = transfer_mse,
+            dataset             = dataset_name,
+            model               = model_name,
+            distillation_method = DISTILLATION_METHOD,
+            n_distill_steps     = cfg['n_distill_steps'],
+        )
+        main_rows.append({'seed': seed, 'alpha': alpha, **main_row})
+        feature_rows_all.extend({'seed': seed, 'alpha': alpha, **r} for r in feat_rows)
+
+        print(f"{alpha:>6.2f}  {transfer_mse:>14.6f}  {main_row['fft_distance']:>14.4f}  "
+              f"{main_row['freq_rank_error']:>14.4f}  {main_row['acf_short']:>10.4f}")
+
+    # ── Step 6: Append (dedup) to CSVs ────────────────────────────────────────
+    key_cols = ['seed', 'dataset', 'model', 'n_distill_steps', 'alpha']
+    n_main = _append_dedup(results_dir / 'postfix_sweep.csv',
+                           main_rows, key_cols, POSTFIX_MAIN_COLUMNS)
+    n_feat = _append_dedup(results_dir / 'postfix_sweep_feature.csv',
+                           feature_rows_all, key_cols, POSTFIX_FEATURE_COLUMNS)
+    print(f"\nAppended {n_main} rows → {results_dir / 'postfix_sweep.csv'}")
+    print(f"Appended {n_feat} rows → {results_dir / 'postfix_sweep_feature.csv'}")
+
+
+# =============================================================================
 # ENTRY POINT
 # =============================================================================
 
@@ -710,13 +980,58 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-   
-     # Full matrix run — produces metrics_main.csv and metrics_feature_wise.csv.
-    # Edit ACTIVE_DATASETS and ACTIVE_MODELS at the top of the file to control scope.
-    ACTIVE_DATASETS[:] = ['ETTh1']
-    ACTIVE_MODELS[:]   = ['DLinear']
-    DISTILL_CONFIG['n_distill_steps'] = 300
-    DISTILL_CONFIG['expert_epochs']   = 80
-    DISTILL_CONFIG['eval_max_epochs'] = 50
+    # ── Select run mode ───────────────────────────────────────────────────────
+    # 'postfix' — Manual post-fix alpha sweep for ONE (seed, dataset, model).
+    #             Distils once, sweeps alpha, APPENDS to postfix_sweep.csv.
+    #             Change DATASET/MODEL/SEED below and re-run to accumulate rows.
+    # 'budget'  — H0 budget sensitivity: one (dataset × model) × N step counts
+    # 'full'    — Full matrix: all ACTIVE_DATASETS × ACTIVE_MODELS at 300 steps
+    RUN_MODE = 'postfix'
 
-    main()
+    results_dir = Path(__file__).parent / 'results'
+
+    if RUN_MODE == 'postfix':
+        # ── Manual run knobs — edit these, then run the file ──────────────────
+        # Workflow: fix SEED + MODEL, sweep all 5 datasets one at a time by
+        # changing DATASET and re-running.  Each run appends its alpha rows to
+        # results/postfix_sweep.csv without overwriting earlier datasets.
+        # Then change MODEL and repeat the 5 datasets.  Finally bump SEED.
+        SEED       = 123
+        DATASET    = 'weather'      # ETTh1 | ETTh2 | ETTm1 | ETTm2 | weather
+        MODEL      = 'DLinear'    # MLP | DLinear | CNN
+        ALPHA_GRID = [0.0, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0]
+
+        DISTILL_CONFIG['n_distill_steps'] = 300
+        DISTILL_CONFIG['expert_epochs']   = 80
+        DISTILL_CONFIG['eval_max_epochs'] = 100   # early stopping fires well before
+
+        run_postfix_experiment(
+            dataset_name = DATASET,
+            model_name   = MODEL,
+            cfg          = DISTILL_CONFIG,
+            seed         = SEED,
+            alpha_grid   = ALPHA_GRID,
+            results_dir  = results_dir,
+        )
+
+    elif RUN_MODE == 'budget':
+        # H0 validation: shows how metrics change as distillation budget grows.
+        # Step 0 = pure initialization baseline (no MTT optimization).
+        # Fixed seed (42) inside run_single_experiment means expert trajectory
+        # and initialization are identical across all step counts.
+        DISTILL_CONFIG['expert_epochs']   = 80
+        DISTILL_CONFIG['eval_max_epochs'] = 100
+        run_budget_sensitivity(
+            dataset_name = 'ETTh2',
+            model_name   = 'MLP',
+            step_counts  = [0,300],
+            results_dir  = results_dir,
+        )
+
+    elif RUN_MODE == 'full':
+        # Full matrix run — produces metrics_main.csv and metrics_feature_wise.csv.
+        # Edit ACTIVE_DATASETS and ACTIVE_MODELS at the top of the file to control scope.
+        DISTILL_CONFIG['n_distill_steps'] = 100
+        DISTILL_CONFIG['expert_epochs']   = 80
+        DISTILL_CONFIG['eval_max_epochs'] = 60
+        main()
