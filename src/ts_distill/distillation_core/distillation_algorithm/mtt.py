@@ -127,6 +127,9 @@ class MTTDistiller(BaseDistiller):
 
         n_synthetic = synthetic_data.shape[0]
 
+        # Snapshot of initial synthetic for drift tracking (diagnostic).
+        synthetic_data_init = synthetic_data.detach().clone()
+
         # The outer-loop optimiser updates the synthetic DATA tensor directly.
         # Momentum=0.5 damps oscillations that are common in meta-learning loops.
         optimizer_img = torch.optim.SGD([synthetic_data], lr=self.synthetic_lr, momentum=0.5)
@@ -225,11 +228,30 @@ class MTTDistiller(BaseDistiller):
             # them produces parameter updates more like the expert's?"
             grand_loss.backward()
 
+            # Clip meta-gradient norm before applying the outer update.
+            # When grand_loss > 1 (student moved away from target), the raw
+            # gradient can spike by orders of magnitude — especially for
+            # recurrent models (LSTM) whose backward pass already amplifies
+            # gradients through time.  Clipping at 1.0 caps catastrophic
+            # updates without affecting steps where grad_norm is already small
+            # (e.g. MLP typically has grad_norm ~5e-3, never triggers).
+            torch.nn.utils.clip_grad_norm_([synthetic_data], max_norm=1.0)
+
             # ── Step 7: Update the synthetic sequence with the meta-gradient ──
             optimizer_img.step()
 
             if (step + 1) % 5 == 0 or step == 0:
-                print(f"[Step {step + 1:>3}/{n_steps}] Loss: {grand_loss.item():.4f}")
+                grad_norm = (synthetic_data.grad.norm().item()
+                             if synthetic_data.grad is not None else 0.0)
+                seq_delta = (synthetic_data.detach() - synthetic_data_init).abs().mean().item()
+                print(
+                    f"[Step {step + 1:>3}/{n_steps}]"
+                    f"  loss={grand_loss.item():.4f}"
+                    f"  param_loss={param_loss.item():.3f}"
+                    f"  param_dist={param_dist.item():.3f}"
+                    f"  grad_norm={grad_norm:.2e}"
+                    f"  seq_delta={seq_delta:.2e}"
+                )
 
             # ── Step 8 (optional): Best-snapshot validation ───────────────────
             # Every val_snapshot_every steps, train a fresh probe student on the

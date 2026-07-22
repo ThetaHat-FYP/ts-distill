@@ -64,6 +64,7 @@ class TrendMetric(BaseTemporalMetric):
             trend_real = STL(real_t[:, c],       period=self.period, robust=True).fit().trend
             trend_syn  = STL(synthetic[:N, c],   period=self.period, robust=True).fit().trend
 
-            results[c] = np.linalg.norm(trend_real - trend_syn) / N
+            # RMSE: L2 norm scales by sqrt(N), so divide by sqrt(N) for true scale-free comparison
+            results[c] = np.linalg.norm(trend_real - trend_syn) / np.sqrt(N)
 
         return results
