@@ -998,7 +998,7 @@ if __name__ == '__main__':
         # Then change MODEL and repeat the 5 datasets.  Finally bump SEED.
         SEED       = 123
         DATASET    = 'weather'      # ETTh1 | ETTh2 | ETTm1 | ETTm2 | weather
-        MODEL      = 'DLinear'    # MLP | DLinear | CNN
+        MODEL      = 'CNN'    # MLP | DLinear | CNN
         ALPHA_GRID = [0.0, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0]
 
         DISTILL_CONFIG['n_distill_steps'] = 300
