@@ -71,7 +71,7 @@ from ts_distill.trainer.trainer.trainer import Trainer
 # CONFIG
 # =============================================================================
 
-ACTIVE_DATASETS = ["ETTh1", "ETTh2", "ETTm1", "ETTm2"]
+ACTIVE_DATASETS = ["ETTh1", "ETTh2", "ETTm1", "ETTm2","weather"]
 ACTIVE_MODELS   = ["DLinear", "MLP", "CNN"]
 
 SEEDS = [123]
@@ -112,6 +112,13 @@ DATASET_CONFIGS = {
         "border2s":    [12 * 30 * 96, 12 * 30 * 96 + 4 * 30 * 96, 12 * 30 * 96 + 8 * 30 * 96],
         "in_features": 7,
     },
+    "weather": {
+        "csv_path":    r"C:\fyp\ts-distill\example/weather.csv",
+        "split_mode":  "ratios",
+        "train_ratio": 0.7,
+        "val_ratio":   0.1,
+        "in_features": 21,
+    },
 }
 
 EXPERT_CONFIG = {
@@ -146,8 +153,8 @@ BOUNDARY_CONFIG = {
 # =============================================================================
 
 RESULTS_DIR   = Path(__file__).parent / "results"
-BOUNDARY_CSV  = RESULTS_DIR / "phase_boundaries.csv"
-DELTA_CSV     = RESULTS_DIR / "phase_boundary_deltas.csv"
+BOUNDARY_CSV  = RESULTS_DIR / "phase_boundaries_new.csv"
+DELTA_CSV     = RESULTS_DIR / "phase_boundary_deltas_new.csv"
 
 BOUNDARY_COLS = [
     "dataset", "model", "seed",

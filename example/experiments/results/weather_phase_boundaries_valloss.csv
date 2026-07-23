@@ -1,0 +1,12 @@
+dataset,model,seed,boundary_epoch,n_checkpoints,best_val_loss,final_val_loss,smoothing_window,patience,min_delta_frac,notes
+
+weather,DLinear,42,1,81,0.46431032,0.46260645,5,5,0.01,
+weather,MLP,42,25,81,0.42907566,0.40647878,5,5,0.01,
+weather,CNN,42,7,81,0.4259502,0.40977405,5,5,0.01,
+weather,LSTM,42,16,81,0.66131886,0.4681884,5,5,0.01,
+weather,DLinear,7,1,81,0.46488635,0.46176094,5,5,0.01,
+weather,MLP,7,19,81,0.43480874,0.40696381,5,5,0.01,
+weather,CNN,7,10,81,0.4196932,0.41906655,5,5,0.01,
+weather,DLinear,123,1,81,0.46461892,0.46177497,5,5,0.01,
+weather,MLP,123,22,81,0.4319763,0.40702403,5,5,0.01,
+weather,CNN,123,10,81,0.42036857,0.41222776,5,5,0.01,

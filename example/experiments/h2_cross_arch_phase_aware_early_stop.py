@@ -79,7 +79,7 @@ from ts_distill.evaluation.evaluation import Evaluator
 ACTIVE_DATASETS = ["ETTh1", "ETTh2", "ETTm1", "ETTm2"]
 ACTIVE_MODELS   = ["DLinear","MLP", "CNN"]
 
-MULTI_SEED_DATASETS = {"ETTh1", "ETTh2", "ETTm1", "ETTm2"}
+MULTI_SEED_DATASETS = {"weather"}
 #MULTI_SEED_DATASETS = {"ETTh1", "ETTh2", "ETTm1", "ETTm2"}
 SEEDS_MULTI = [7, 42, 123]
 SEEDS_SINGLE = [7, 42, 123]
@@ -120,14 +120,37 @@ DATASET_CONFIGS = {
         "border2s":   [12 * 30 * 96, 12 * 30 * 96 + 4 * 30 * 96, 12 * 30 * 96 + 8 * 30 * 96],
         "in_features": 7,
     },
+    "weather": {
+        "csv_path":    r"C:\fyp\ts-distill\example/weather.csv",
+        "split_mode":  "ratios",
+        "train_ratio": 0.7,
+        "val_ratio":   0.1,
+        "in_features": 21,
+    },
 }
 
 # Phase-boundary detection method:
-#   "velocity" — results/phase_boundaries.csv         (h_detect_phase_boundary.py,
-#                 validation-loss-velocity threshold detector)
-#   "valloss"  — results/phase_boundaries_valloss.csv (h_detect_phase_boundary_valloss.py,
-#                 validation-loss plateau detector)
-BOUNDARY_METHOD = "velocity"
+#   "velocity"         — results/phase_boundaries.csv (h_detect_phase_boundary.py,
+#                          validation-loss-velocity threshold detector)
+#   "valloss"          — results/weather_phase_boundaries_valloss.csv
+#                          (h_detect_phase_boundary_valloss.py, validation-loss
+#                          plateau detector, weather only)
+#   "changepoint"      — results/new_phase_boundaries_multicriteria.csv
+#                          (h_detect_phase_boundary_multicriteria.py, PELT/BinSeg
+#                          change-point detection on parameter movement — no
+#                          manually tuned threshold; seed 7 only)
+#   "valloss_allseeds" — results/all_seeds_phase_boundaries_valloss_new.csv
+#                          (h_detect_phase_boundary_valloss.py run across all
+#                          3 seeds x all 5 datasets x 3 models — full coverage)
+BOUNDARY_METHOD = "valloss_allseeds"
+
+# Which method(s) to actually run this pass:
+#   "phase_aware" — only phase_aware_mtt (skips any combo with no boundary)
+#   "original"    — only param_mtt (standard MTT, no boundary needed)
+#   "both"        — run both methods for every combo (original behavior)
+# Each selection writes to its own CSV (see CSV_PATH below) so runs don't
+# mix results computed under different selections.
+RUN_SELECTION = "phase_aware"
 
 DISTILL_CONFIG = {
     "seq_len":  96,
@@ -142,7 +165,7 @@ DISTILL_CONFIG = {
     "n_distill_steps":        1000,
     "n_synthetic":            384,
     "synthetic_lr":           5.0,
-    "student_lr":             0.1,
+    "student_lr":             0.05,
     "student_steps":          20,
     "snapshot_student_steps": 50,
     "trajectory_gap":         5,
@@ -163,7 +186,7 @@ DISTILL_CONFIG = {
 # =============================================================================
 
 RESULTS_DIR = Path(__file__).parent / "results"
-CSV_PATH    = RESULTS_DIR / "cross_arch_phase_aware_early_stop_stu_Lr_0.1.csv"
+CSV_PATH    = RESULTS_DIR / f"cross_arch_{RUN_SELECTION}_{BOUNDARY_METHOD}_0.05SR.csv"
 
 CSV_COLUMNS = [
     "experiment",
@@ -220,8 +243,14 @@ def row_exists(dataset, expert, student, seed, method):
 # PHASE BOUNDARY LOADING
 # =============================================================================
 
-if BOUNDARY_METHOD == "valloss":
-    BOUNDARY_CSV    = RESULTS_DIR / "phase_boundaries_valloss.csv"
+if BOUNDARY_METHOD == "valloss_allseeds":
+    BOUNDARY_CSV    = RESULTS_DIR / "all_seeds_phase_boundaries_valloss_new.csv"
+    BOUNDARY_SCRIPT = "h_detect_phase_boundary_valloss.py (all-seeds sweep)"
+elif BOUNDARY_METHOD == "changepoint":
+    BOUNDARY_CSV    = RESULTS_DIR / "new_phase_boundaries_multicriteria.csv"
+    BOUNDARY_SCRIPT = "h_detect_phase_boundary_multicriteria.py"
+elif BOUNDARY_METHOD == "valloss":
+    BOUNDARY_CSV    = RESULTS_DIR / "weather_phase_boundaries_valloss.csv"
     BOUNDARY_SCRIPT = "h_detect_phase_boundary_valloss.py"
 else:
     BOUNDARY_CSV    = RESULTS_DIR / "phase_boundaries.csv"
@@ -521,6 +550,22 @@ def eval_on_synthetic(student_name, synthetic_seq, data, cfg, device, seed):
     return evaluator.test_on_real(model, data["test_data"].to(device))["MSE"]
 
 
+def methods_for_selection(selection: str, boundary) -> list:
+    """Which method(s) to run for a given (dataset, expert, seed), given
+    RUN_SELECTION and whether a boundary was found for this combo."""
+    if selection == "phase_aware":
+        return ["phase_aware_mtt"] if boundary is not None else []
+    elif selection == "original":
+        return ["param_mtt"]
+    elif selection == "both":
+        methods = ["param_mtt"]
+        if boundary is not None:
+            methods.append("phase_aware_mtt")
+        return methods
+    else:
+        raise ValueError(f"Unknown RUN_SELECTION: {selection!r} (expected 'phase_aware', 'original', or 'both')")
+
+
 # =============================================================================
 # MAIN LOOP
 # =============================================================================
@@ -561,12 +606,18 @@ def run(device, cfg):
                 )
                 print("=" * 60)
 
+                # Which method(s) RUN_SELECTION calls for on this combo.
+                methods_needed = methods_for_selection(RUN_SELECTION, boundary)
+
+                if not methods_needed:
+                    print(
+                        f"  [{RUN_SELECTION}] No boundary for {expert_name} on "
+                        f"{dataset_name} — nothing to run for this selection, skipping."
+                    )
+                    continue
+
                 # Skip the whole expert block only if every (student, method)
                 # combo is already done.
-                methods_needed = ["param_mtt"]
-                if boundary is not None:
-                    methods_needed.append("phase_aware_mtt")
-
                 if all(
                     row_exists(dataset_name, expert_name, s, seed, method)
                     for s in ACTIVE_MODELS
@@ -600,45 +651,37 @@ def run(device, cfg):
                     continue
 
                 # ---------------------------------------------------------
-                # Distill synthetic data (param_mtt always; phase_aware_mtt
-                # only if a boundary was detected for this expert)
+                # Distill synthetic data — only the method(s) methods_needed
+                # calls for.
                 # ---------------------------------------------------------
                 synthetic = {}
 
-                # Restore RNG state to right after expert training so
-                # synthetic_init matches between methods for the same
-                # expert/seed.
-                torch.set_rng_state(post_expert_rng_state)
+                # Restore RNG state to right after expert training so both
+                # methods (when both run) distill from an identical
+                # synthetic_init — the matching loss is the only difference.
+                if "param_mtt" in methods_needed:
+                    torch.set_rng_state(post_expert_rng_state)
+                    try:
+                        synthetic["param_mtt"] = distill_param_mtt(
+                            expert_name, recorder, data, cfg, device, seed
+                        )
+                    except Exception as exc:
+                        print(f"  [FAIL] param_mtt distillation: {exc}")
+                        for student_name in ACTIVE_MODELS:
+                            if not row_exists(dataset_name, expert_name, student_name, seed, "param_mtt"):
+                                append_csv({
+                                    "experiment":     "cross_arch_phase_aware_early_stop",
+                                    "dataset":        dataset_name,
+                                    "expert_model":   expert_name,
+                                    "student_model":  student_name,
+                                    "seed":           seed,
+                                    "method":         "param_mtt",
+                                    "phase_boundary": "",
+                                    "n_pairs_available": n_pairs,
+                                    "notes":          f"distillation_failed: {str(exc)[:120]}",
+                                })
 
-                try:
-                    synthetic["param_mtt"] = distill_param_mtt(
-                        expert_name, recorder, data, cfg, device, seed
-                    )
-                except Exception as exc:
-                    print(f"  [FAIL] param_mtt distillation: {exc}")
-                    for student_name in ACTIVE_MODELS:
-                        if not row_exists(dataset_name, expert_name, student_name, seed, "param_mtt"):
-                            append_csv({
-                                "experiment":     "cross_arch_phase_aware_early_stop",
-                                "dataset":        dataset_name,
-                                "expert_model":   expert_name,
-                                "student_model":  student_name,
-                                "seed":           seed,
-                                "method":         "param_mtt",
-                                "phase_boundary": "",
-                                "n_pairs_available": n_pairs,
-                                "notes":          f"distillation_failed: {str(exc)[:120]}",
-                            })
-
-                if boundary is None:
-                    print(
-                        f"  [phase_aware_mtt] No boundary for {expert_name} on "
-                        f"{dataset_name} — skipping (identical to param_mtt)."
-                    )
-                else:
-                    # Restore the same starting RNG state as param_mtt so both
-                    # methods distill from an identical synthetic_init — the
-                    # matching loss is the only difference.
+                if "phase_aware_mtt" in methods_needed:
                     torch.set_rng_state(post_expert_rng_state)
                     try:
                         synthetic["phase_aware_mtt"] = distill_phase_aware_mtt(
