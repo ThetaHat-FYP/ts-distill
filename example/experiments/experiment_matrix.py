@@ -104,7 +104,7 @@ from ts_distill.evaluation.hybrid_evaluation.hybrid import (
 
 # Datasets to evaluate.
 # Remove entries you don't have CSV files for.
-ACTIVE_DATASETS = ['ETTh1','ETTh2','ETTm1','ETTm2']
+ACTIVE_DATASETS = ['ETTh1', 'ETTh2','ETTm1', 'ETTm2']
 
 # Models to evaluate against each dataset.
 ACTIVE_MODELS = ['DLinear','MLP','CNN']
@@ -654,12 +654,25 @@ def run_budget_sensitivity(
     output_name:      str = None,
 ) -> pd.DataFrame:
     """
-    Run the same (dataset, model) at multiple distillation step counts and save
-    a steps-vs-MSE table — the data needed for a convergence-speed AUC curve.
+    Build a steps-vs-MSE table across multiple distillation-step budgets for
+    ONE (dataset, model) pair — the data needed for a convergence-speed AUC
+    curve.
 
-    Because the same `seed` is used for every step count, each run gets an
-    identical expert trajectory and identical initializer sample — only the
-    distillation budget differs. This makes the comparison clean.
+    Earlier version of this function called run_single_experiment() once per
+    step count, which retrained the expert and re-evaluated the real-data
+    model from scratch for every budget even though — given the fixed seed —
+    both are identical every time. This version loads data and trains the
+    expert ONCE and evaluates the real-data model ONCE, then calls the
+    existing MTTDistiller.distill() once per step count in step_counts to get
+    that budget's synthetic sequence.
+
+    Note: distill() is called fresh from the same synthetic_init for each
+    step count (with its own new optimizer/momentum state), so the
+    distillation itself still re-runs overlapping step ranges — e.g. the
+    n_steps=100 and n_steps=200 calls both redo steps 1-100 from scratch.
+    Only the expert-training and real-eval redundancy is removed here; the
+    distillation redundancy is an accepted tradeoff for using distill() as-is
+    (unmodified) rather than adding a checkpoint-capturing variant to mtt.py.
 
     Args:
         dataset_name     (str):  E.g. 'ETTh1'.
@@ -668,17 +681,123 @@ def run_budget_sensitivity(
                                  0 = pure initialization baseline (no MTT optimization).
         results_dir      (Path): Directory to write the CSV into.
         initializer_name (str):  Key in INITIALIZER_REGISTRY, e.g. 'random'.
-        seed             (int):  Seed passed to run_single_experiment.
+        seed             (int):  Seed for expert training, initializer sampling,
+                                 and distillation.
         compute_metrics  (bool): When True, also compute+save the heavier ACF/FFT
-                                 temporal metrics (metrics_budget_sensitivity_feature.csv).
-                                 Not needed for AUC, which only uses transfer_mse.
+                                 temporal metrics (per checkpoint). Not needed for
+                                 AUC, which only uses transfer_mse.
         output_name      (str):  CSV filename to write under results_dir. Defaults to
                                  f'{initializer_name}_convergence_{dataset_name}_{model_name}_seed{seed}.csv'.
 
     Returns:
         pd.DataFrame: One row per step count with columns
-            [dataset, model, distillation_method, seed, n_distill_steps, real_mse, transfer_mse].
+            [dataset, model, distillation_method, initializer, seed, n_distill_steps, real_mse, transfer_mse].
     """
+    torch.manual_seed(seed)
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    cfg    = DISTILL_CONFIG
+
+    dataset_cfg = DATASET_CONFIGS[dataset_name]
+    seq_len     = dataset_cfg.get('seq_len',     cfg['seq_len'])
+    pred_len    = dataset_cfg.get('pred_len',    cfg['pred_len'])
+    in_features = dataset_cfg.get('in_features', cfg['in_features'])
+    window_size = seq_len + pred_len
+    make_model  = _make_model_factory(
+        model_name, {**cfg, 'seq_len': seq_len, 'pred_len': pred_len, 'in_features': in_features}
+    )
+
+    # ── Load and normalise data (once) ────────────────────────────────────────
+    csv_path = dataset_cfg['csv_path']
+    if not Path(csv_path).exists():
+        raise FileNotFoundError(
+            f"CSV not found at '{csv_path}'. Download the ETT datasets and place them in example/."
+        )
+    df_raw = pd.read_csv(csv_path)
+    values = df_raw.iloc[:, 1:].values.astype(np.float32)
+
+    train_start, train_end, val_start, val_end, test_start, test_end = get_data_splits(
+        values      = values,
+        window_size = window_size,
+        seq_len     = seq_len,
+        dataset_cfg = dataset_cfg,
+    )
+    scaler = StandardScaler()
+    scaler.fit(values[train_start:train_end])
+    data = scaler.transform(values)
+
+    train_data = torch.tensor(make_windows(data[train_start:train_end], window_size), dtype=torch.float32)
+    val_data   = torch.tensor(make_windows(data[val_start:val_end],     window_size), dtype=torch.float32)
+    test_data  = torch.tensor(make_windows(data[test_start:test_end],   window_size), dtype=torch.float32)
+    raw_train_data = torch.tensor(data[train_start:train_end], dtype=torch.float32)
+
+    # ── Train expert and record trajectory (once) ────────────────────────────
+    recorder     = SimpleRecorder(record_every=1)
+    expert_model = make_model()
+    expert_trainer = Trainer(
+        model     = expert_model,
+        optimizer = torch.optim.SGD(expert_model.parameters(), lr=cfg['expert_lr'], momentum=cfg['expert_momentum']),
+        criterion = torch.nn.MSELoss(),
+        device    = device,
+        seq_len   = seq_len,
+    )
+    expert_trainer.fit(
+        dataloader = MiniBatchLoader(train_data, batch_size=cfg['batch_size']),
+        epochs     = cfg['expert_epochs'],
+        callbacks  = [recorder, SimpleCallback()],
+    )
+
+    # ── Evaluate the real-data model (once — identical for every checkpoint) ─
+    eval_val_loader = TorchDataLoader(val_data, batch_size=cfg['eval_batch_size'], shuffle=False)
+    torch.manual_seed(0)
+    real_model   = make_model()
+    real_trainer = Trainer(
+        model     = real_model,
+        optimizer = torch.optim.Adam(real_model.parameters(), lr=cfg['eval_lr']),
+        criterion = torch.nn.MSELoss(),
+        device    = device,
+        seq_len   = seq_len,
+    )
+    real_trainer.fit(
+        dataloader = TorchDataLoader(train_data, batch_size=cfg['eval_batch_size'], shuffle=True),
+        epochs     = cfg['eval_max_epochs'],
+        val_loader = eval_val_loader,
+        patience   = cfg['early_stop_patience'],
+    )
+    evaluator = Evaluator(seq_len=seq_len, batch_size=cfg['eval_batch_size'])
+    real_mse  = evaluator.test_on_real(real_model, test_data.to(device))['MSE']
+
+    # ── Distil once per step count, each starting fresh from synthetic_init ──
+    # (See docstring: this re-runs overlapping step ranges across step_counts —
+    # only the expert-training/real-eval work above is shared, not this part.)
+    initializer    = INITIALIZER_REGISTRY[initializer_name]()
+    synthetic_init = initializer.initialize_sequence(raw_train_data, cfg['n_synthetic'])
+    distiller = MTTDistiller(
+        initializer            = initializer,
+        matcher                = MSEMatcher(),
+        model_factory          = make_model,
+        expert_recorder        = recorder,
+        expert_epochs          = cfg['trajectory_gap'],
+        syn_batch_size         = cfg['batch_size'],
+        synthetic_lr           = cfg['synthetic_lr'],
+        student_lr             = cfg['student_lr'],
+        student_steps          = cfg['student_steps'],
+        snapshot_student_steps = cfg['snapshot_student_steps'],
+        seq_len                = seq_len,
+        pred_len               = pred_len,
+    )
+
+    checkpoints = {}
+    for n_steps in step_counts:
+        print(f"\n--- Distilling {dataset_name} x {model_name} x {initializer_name} "
+              f"for n_steps={n_steps} ---")
+        checkpoints[n_steps] = distiller.distill(
+            synthetic_init = synthetic_init,
+            n_steps        = n_steps,
+            val_data       = val_data,
+        )
+
+    # ── Evaluate each checkpoint's synthetic data (the only part that must repeat) ─
+    period = DATASET_PERIODS.get(dataset_name)
     all_main     = []
     all_features = []
     total = len(step_counts)
@@ -688,20 +807,58 @@ def run_budget_sensitivity(
         print(f"[{i}/{total}]  {dataset_name}  x  {model_name}  x  {initializer_name}  —  n_steps={n_steps}")
         print(f"{'=' * 70}")
         try:
-            cfg = {**DISTILL_CONFIG, 'n_distill_steps': n_steps}
-            feature_rows, main_row, _ = run_single_experiment(
-                dataset_name          = dataset_name,
-                model_name            = model_name,
-                cfg                   = cfg,
-                compute_metrics       = compute_metrics,
-                compute_hybrid_mixing = False,
-                initializer_name      = initializer_name,
-                seed                  = seed,
+            synthetic_sequence = checkpoints[n_steps]
+            syn_windows = torch.tensor(
+                make_windows(synthetic_sequence.cpu().numpy(), window_size), dtype=torch.float32,
             )
-            main_row['seed'] = seed
+            torch.manual_seed(1)
+            syn_model   = make_model()
+            syn_trainer = Trainer(
+                model     = syn_model,
+                optimizer = torch.optim.Adam(syn_model.parameters(), lr=cfg['eval_lr']),
+                criterion = torch.nn.MSELoss(),
+                device    = device,
+                seq_len   = seq_len,
+            )
+            syn_trainer.fit(
+                dataloader = TorchDataLoader(syn_windows, batch_size=cfg['eval_batch_size'], shuffle=True),
+                epochs     = cfg['eval_max_epochs'],
+                val_loader = eval_val_loader,
+                patience   = cfg['early_stop_patience'],
+            )
+            transfer_mse = evaluator.test_on_real(syn_model, test_data.to(device))['MSE']
+
+            main_row = {
+                'dataset':             dataset_name,
+                'model':               model_name,
+                'distillation_method': DISTILLATION_METHOD,
+                'initializer':         initializer_name,
+                'seed':                seed,
+                'n_distill_steps':     n_steps,
+                'real_mse':            real_mse,
+                'transfer_mse':        transfer_mse,
+            }
+
+            if compute_metrics:
+                real_np = raw_train_data.detach().cpu().numpy()
+                syn_np  = synthetic_sequence.detach().cpu().numpy()
+                n_lags  = min(max(2 * period, cfg['acf_n_lags']), cfg['n_synthetic'] - 1)
+                aggregator = MetricAggregator(period=period, n_lags=n_lags)
+                feature_rows, metrics_row = aggregator.compute_all(
+                    real                = real_np,
+                    synthetic           = syn_np,
+                    real_mse            = real_mse,
+                    transfer_mse        = transfer_mse,
+                    dataset             = dataset_name,
+                    model               = model_name,
+                    distillation_method = DISTILLATION_METHOD,
+                    n_distill_steps     = n_steps,
+                )
+                main_row.update(metrics_row)
+                all_features.extend(feature_rows)
+
             all_main.append(main_row)
-            all_features.extend(feature_rows)
-            msg = f"\n  steps={n_steps}  transfer_mse={main_row['transfer_mse']:.6f}"
+            msg = f"\n  steps={n_steps}  transfer_mse={transfer_mse:.6f}"
             if compute_metrics:
                 msg += (
                     f"  acf_short={main_row['acf_short']:.4f}  acf_long={main_row['acf_long']:.4f}  "
@@ -717,7 +874,7 @@ def run_budget_sensitivity(
     if all_main:
         name = output_name or f'{initializer_name}_convergence_{dataset_name}_{model_name}_seed{seed}.csv'
         cols = (MetricAggregator.MAIN_COLUMNS if compute_metrics else
-                ['dataset', 'model', 'distillation_method', 'seed', 'n_distill_steps', 'real_mse', 'transfer_mse'])
+                ['dataset', 'model', 'distillation_method', 'initializer', 'seed', 'n_distill_steps', 'real_mse', 'transfer_mse'])
         main_df = pd.DataFrame(all_main)[cols]
         main_df.to_csv(results_dir / name, index=False)
         print(f"\nBudget sensitivity saved -> {results_dir / name}")
