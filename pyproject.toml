@@ -5,6 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ts-distill"
 version = "0.1.0"
+dependencies = [
+	"pandas",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
