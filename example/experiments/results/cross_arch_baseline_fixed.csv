@@ -1,2 +1,0 @@
-experiment,dataset,expert_model,student_model,seed,method,real_mse,transfer_mse,mse_ratio,n_pairs_available,notes
-

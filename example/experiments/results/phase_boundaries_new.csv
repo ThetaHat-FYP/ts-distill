@@ -1,3 +1,0 @@
-dataset,model,seed,boundary_epoch,n_checkpoints,threshold,smoothing_window,init_window,step_gap,ref_delta,notes
-ETTh1,DLinear,123,22,80,0.1,5,5,1,0.01094356,
-ETTh1,MLP,123,9,80,0.1,5,5,1,0.04540152,

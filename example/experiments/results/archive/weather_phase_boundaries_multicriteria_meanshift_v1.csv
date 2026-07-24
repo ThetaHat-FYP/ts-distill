@@ -1,9 +1,0 @@
-dataset,model,seed,boundary_epoch,n_checkpoints,algorithm,penalty,n_change_points,mean_before,mean_after,drop_ratio,smoothing_window,min_segment_size,penalty_scale,notes
-ETTh1,DLinear,7,4,81,pelt,0.10590626,1,0.59591175,0.05563276,10.711526,5,3,1.0,
-ETTh1,MLP,7,4,81,pelt,0.2808368,1,0.96081901,0.09812322,9.791964,5,3,1.0,
-ETTh1,CNN,7,4,81,pelt,0.25770265,1,0.91482404,0.08293239,11.030962,5,3,1.0,
-ETTh2,DLinear,7,10,81,pelt,0.06873592,2,0.18897427,0.06153777,3.070866,5,3,1.0,
-ETTh2,MLP,7,4,81,pelt,0.13927198,1,0.76636714,0.15215984,5.036593,5,3,1.0,
-ETTh2,CNN,7,13,81,pelt,0.18390855,2,0.24733193,0.07723908,3.202161,5,3,1.0,
-ETTm1,DLinear,7,4,81,pelt,0.20060078,1,0.80490723,0.0537149,14.984803,5,3,1.0,
-ETTm1,MLP,7,4,81,pelt,0.41281629,1,1.25082387,0.19314959,6.475933,5,3,1.0,

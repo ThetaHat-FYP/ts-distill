@@ -1,4 +1,0 @@
-dataset,model,seed,boundary_epoch,n_checkpoints,ref_velocity,ref_param_movement,ref_val_improvement,velocity_threshold,param_movement_threshold,val_improvement_threshold,smoothing_window,init_window,patience,notes
-ETTh1,DLinear,7,,81,0.01380721,0.24550411,0.01066958,0.1,0.1,0.1,5,5,5,no_boundary_found
-ETTh1,MLP,7,,81,0.04447382,0.45729375,0.04481965,0.1,0.1,0.1,5,5,5,no_boundary_found
-ETTh1,CNN,7,,81,0.05086746,0.42951285,0.03545141,0.1,0.1,0.1,5,5,5,no_boundary_found
