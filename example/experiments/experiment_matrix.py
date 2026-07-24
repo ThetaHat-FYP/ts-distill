@@ -65,15 +65,20 @@ from ts_distill.models.factory import create_model
 
 # ── Framework — distillation ──────────────────────────────────────────────────
 from ts_distill.distillation_core.distillation_algorithm.mtt import MTTDistiller
+from ts_distill.distillation_core.distillation_algorithm.phase_aware_mtt import (
+    PhaseAwareMTTDistiller,
+)
 from ts_distill.distillation_core.initializer.random_sample_initializer import RandomSampleInitializer
 
 # ── Framework — training ──────────────────────────────────────────────────────
 from ts_distill.trainer.trainer.trainer import Trainer
 from ts_distill.trainer.callback.simple_callback import SimpleCallback
+from ts_distill.trainer.callback.val_loss_callback import ValLossRecorderCallback
 
 # ── Framework — trajectory ────────────────────────────────────────────────────
 from ts_distill.trajectory.recorder.simple_recorder import SimpleRecorder
 from ts_distill.trajectory.matcher.mse_matcher import MSEMatcher
+from ts_distill.trajectory.phase_detector.valloss_detector import ValLossPlateauDetector
 
 # ── Framework — evaluation ────────────────────────────────────────────────────
 from ts_distill.evaluation.evaluation import Evaluator
@@ -112,6 +117,27 @@ COMPUTE_METRICS = False
 # Results are saved to results/metrics_hybrid.csv regardless of COMPUTE_METRICS.
 COMPUTE_HYBRID_MIXING = False
 HYBRID_MIXING_RATIOS  = (0.1, 0.2, 0.5)  # fractions of real data to mix in
+
+# Set True to switch the outer-loop matching loss to phase-aware MTT:
+# parameter matching in the early phase of the expert's trajectory,
+# prediction matching in the late phase. The phase boundary T+ is detected
+# on the fly from the expert's validation-loss curve (see
+# PHASE_BOUNDARY_CONFIG below) — no separate offline detection run needed.
+# Set False (default) to run standard MTT (parameter matching throughout),
+# identical to the pre-existing behaviour of this file.
+USE_PHASE_AWARE_MATCHING = False
+
+# Phase boundary detection (validation-loss plateau — see
+# ts_distill.trajectory.phase_detector.valloss_detector.ValLossPlateauDetector).
+# T+ = epoch of the best smoothed val loss before `patience` consecutive
+# epochs each fail to improve on the best-so-far by `min_delta_frac` (relative).
+# Only used when USE_PHASE_AWARE_MATCHING is True. If no plateau is found,
+# phase_boundary stays None and PhaseAwareMTTDistiller behaves like MTTDistiller.
+PHASE_BOUNDARY_CONFIG = {
+    'smoothing_window': 5,
+    'patience':          5,
+    'min_delta_frac':  0.01,
+}
 
 # =============================================================================
 # DATASET CONFIGURATION
@@ -231,7 +257,7 @@ DISTILL_CONFIG = {
     'expert_epochs':         80,
     'expert_lr':           0.01,
     'expert_momentum':      0.9,
-    'n_distill_steps':      300,
+    'n_distill_steps':      1000,
     'n_synthetic':          384,    # synthetic sequence length (timesteps)
     'synthetic_lr':         5.0,
     'student_lr':          0.01,
@@ -284,11 +310,13 @@ def _make_model_factory(model_name: str, cfg: dict):
 
 
 def run_single_experiment(
-    dataset_name:    str,
-    model_name:            str,
-    cfg:                   dict,
-    compute_metrics:       bool = True,
-    compute_hybrid_mixing: bool = False,
+    dataset_name:              str,
+    model_name:                str,
+    cfg:                       dict,
+    compute_metrics:           bool = True,
+    compute_hybrid_mixing:     bool = False,
+    use_phase_aware_matching:  bool = False,
+    phase_boundary_cfg:        dict = None,
 ) -> tuple:
     """
     Run the full MTT pipeline for one (dataset, model) combination.
@@ -300,6 +328,13 @@ def run_single_experiment(
         compute_metrics       (bool): When False, skip temporal metrics.
         compute_hybrid_mixing (bool): When True, run hybrid mixing evaluation across
                                       HYBRID_MIXING_RATIOS and return results.
+        use_phase_aware_matching (bool): When True, detect the expert's phase
+                                      boundary from its validation-loss curve and
+                                      distil with PhaseAwareMTTDistiller instead
+                                      of standard MTTDistiller.
+        phase_boundary_cfg    (dict): kwargs for ValLossPlateauDetector
+                                      (smoothing_window, patience, min_delta_frac).
+                                      Defaults to PHASE_BOUNDARY_CONFIG when None.
 
     Returns:
         Tuple[List[Dict], Dict, Optional[Dict]]: (feature_rows, main_row, hybrid_row)
@@ -307,7 +342,7 @@ def run_single_experiment(
             main_row     — aggregate result dict.
             hybrid_row   — {dataset, model, hybrid_<r>_mse, ...} or None.
     """
-    torch.manual_seed(42)
+    torch.manual_seed(7)
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     # ── Resolve per-dataset overrides ─────────────────────────────────────────
@@ -353,6 +388,13 @@ def run_single_experiment(
     # Raw continuous training sequence — passed to the distiller and to metrics.
     raw_train_data = torch.tensor(data[train_start:train_end], dtype=torch.float32)
 
+    # Shared val loader — used for expert val-loss curve tracking (phase-aware
+    # boundary detection), MTT best-snapshot selection, and eval-time early
+    # stopping for BOTH the real and synthetic models below.
+    eval_val_loader = TorchDataLoader(
+        val_data, batch_size=cfg['eval_batch_size'], shuffle=False
+    )
+
     # ── Step 2: Train expert and record trajectory ────────────────────────────
     recorder     = SimpleRecorder(record_every=1)
     expert_model = make_model()
@@ -367,18 +409,45 @@ def run_single_experiment(
         device    = device,
         seq_len   = seq_len,
     )
+    expert_callbacks = [recorder, SimpleCallback()]
+
+    # Only track the per-epoch val-loss curve when phase-aware matching is
+    # enabled — it costs one extra val pass per epoch and is otherwise unused.
+    val_loss_recorder = None
+    if use_phase_aware_matching:
+        val_loss_recorder = ValLossRecorderCallback(
+            eval_fn=lambda: expert_trainer.eval_epoch(eval_val_loader)
+        )
+        expert_callbacks.append(val_loss_recorder)
+
     expert_loader = MiniBatchLoader(train_data, batch_size=cfg['batch_size'])
     expert_trainer.fit(
         dataloader = expert_loader,
         epochs     = cfg['expert_epochs'],
-        callbacks  = [recorder, SimpleCallback()],
+        callbacks  = expert_callbacks,
     )
+
+    # ── Step 2b: Detect phase boundary (phase-aware matching only) ────────────
+    phase_boundary = None
+    if use_phase_aware_matching:
+        detector_cfg     = phase_boundary_cfg or PHASE_BOUNDARY_CONFIG
+        boundary_detector = ValLossPlateauDetector(**detector_cfg)
+        boundary_result   = boundary_detector.detect(val_loss_recorder.val_losses)
+        phase_boundary    = boundary_result['boundary_epoch']
+        print(
+            f"   [PhaseDetector] T+ = {phase_boundary} "
+            f"(best_val_loss={boundary_result['best_val_loss']:.6f}, "
+            f"final_val_loss={boundary_result['final_val_loss']:.6f})"
+            if phase_boundary is not None else
+            "   [PhaseDetector] No plateau found — phase_aware_mtt will run as "
+            "parameter matching throughout (same as standard MTT)."
+        )
 
     # ── Step 3: Distil synthetic sequence ─────────────────────────────────────
     initializer    = RandomSampleInitializer()
     synthetic_init = initializer.initialize_sequence(raw_train_data, cfg['n_synthetic'])
 
-    distiller = MTTDistiller(
+    distiller_kwargs = dict(
         initializer            = initializer,
         matcher                = MSEMatcher(),
         model_factory          = make_model,
@@ -393,16 +462,15 @@ def run_single_experiment(
         pred_len               = pred_len,
     )
 
+    if use_phase_aware_matching:
+        distiller = PhaseAwareMTTDistiller(**distiller_kwargs, phase_boundary=phase_boundary)
+    else:
+        distiller = MTTDistiller(**distiller_kwargs)
+
     synthetic_sequence = distiller.distill(
         synthetic_init = synthetic_init,
         n_steps        = cfg['n_distill_steps'],
         val_data       = val_data,
-    )
-
-    # Shared val loader — early-stopping signal for BOTH models so convergence
-    # is measured against the same real validation distribution.
-    eval_val_loader = TorchDataLoader(
-        val_data, batch_size=cfg['eval_batch_size'], shuffle=False
     )
 
     # ── Step 4a: Evaluate model trained on real data ──────────────────────────
@@ -678,11 +746,13 @@ def main() -> None:
 
             try:
                 feature_rows, main_row, hybrid_row = run_single_experiment(
-                    dataset_name          = dataset_name,
-                    model_name            = model_name,
-                    cfg                   = DISTILL_CONFIG,
-                    compute_metrics       = COMPUTE_METRICS,
-                    compute_hybrid_mixing = COMPUTE_HYBRID_MIXING,
+                    dataset_name              = dataset_name,
+                    model_name                = model_name,
+                    cfg                       = DISTILL_CONFIG,
+                    compute_metrics           = COMPUTE_METRICS,
+                    compute_hybrid_mixing     = COMPUTE_HYBRID_MIXING,
+                    use_phase_aware_matching  = USE_PHASE_AWARE_MATCHING,
+                    phase_boundary_cfg        = PHASE_BOUNDARY_CONFIG,
                 )
                 all_main.append(main_row)
                 all_features.extend(feature_rows)
@@ -710,12 +780,11 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-   
-     # Full matrix run — produces metrics_main.csv and metrics_feature_wise.csv.
+
+    # Full matrix run — produces metrics_main.csv and metrics_feature_wise.csv.
     # Edit ACTIVE_DATASETS and ACTIVE_MODELS at the top of the file to control scope.
     ACTIVE_DATASETS[:] = ['ETTh1']
     ACTIVE_MODELS[:]   = ['DLinear']
-    DISTILL_CONFIG['n_distill_steps'] = 300
     DISTILL_CONFIG['expert_epochs']   = 80
     DISTILL_CONFIG['eval_max_epochs'] = 50
 
