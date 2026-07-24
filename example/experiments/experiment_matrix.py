@@ -42,6 +42,7 @@ Run from the project root:
     python -m example.experiments.experiment_matrix
 """
 
+import csv
 import sys
 from pathlib import Path
 
@@ -82,6 +83,9 @@ from ts_distill.trajectory.phase_detector.valloss_detector import ValLossPlateau
 
 # ── Framework — evaluation ────────────────────────────────────────────────────
 from ts_distill.evaluation.evaluation import Evaluator
+from ts_distill.evaluation.cross_arch_evaluation.cross_arch_comparison_evaluator import (
+    CrossArchComparisonEvaluator,
+)
 
 # ── Framework — temporal metrics (new module) ─────────────────────────────────
 from ts_distill.metrics.aggregator import MetricAggregator
@@ -125,7 +129,7 @@ HYBRID_MIXING_RATIOS  = (0.1, 0.2, 0.5)  # fractions of real data to mix in
 # PHASE_BOUNDARY_CONFIG below) — no separate offline detection run needed.
 # Set False (default) to run standard MTT (parameter matching throughout),
 # identical to the pre-existing behaviour of this file.
-USE_PHASE_AWARE_MATCHING = False
+USE_PHASE_AWARE_MATCHING = True
 
 # Phase boundary detection (validation-loss plateau — see
 # ts_distill.trajectory.phase_detector.valloss_detector.ValLossPlateauDetector).
@@ -260,7 +264,7 @@ DISTILL_CONFIG = {
     'n_distill_steps':      1000,
     'n_synthetic':          384,    # synthetic sequence length (timesteps)
     'synthetic_lr':         5.0,
-    'student_lr':          0.01,
+    'student_lr':          0.05,
     'student_steps':         20,
     'snapshot_student_steps': 50,
     'batch_size':            64,
@@ -719,6 +723,222 @@ def run_budget_sensitivity(
         print(f"Budget feature table    → {results_dir / 'metrics_budget_sensitivity_feature.csv'}")
 
 
+# # =============================================================================
+# # CROSS-ARCHITECTURE COMPARISON RUN
+# # =============================================================================
+# # Trains each expert once per (dataset, expert_arch, seed), distils BOTH
+# # param_mtt (standard MTT) and phase_aware_mtt from that *same* shared
+# # trajectory and RNG state (so both methods start from an identical
+# # synthetic_init — the matching loss is the only variable), then evaluates
+# # each resulting synthetic set on EVERY architecture in ACTIVE_MODELS as the
+# # student (cross-architecture matrix). Phase boundaries are detected on the
+# # fly from the expert's validation-loss curve (ValLossPlateauDetector) —
+# # no separate offline detection run needed.
+# #
+# # Results are appended row-by-row to CROSS_ARCH_RESULTS_CSV as soon as each
+# # (dataset, expert, student, seed, method) combination finishes — resume-safe:
+# # re-running skips rows already present with a non-empty transfer_mse.
+
+# # Seeds to repeat the whole (dataset, expert) run over, for cross-validation.
+# CROSS_ARCH_SEEDS = [7, 42, 123]
+
+# CROSS_ARCH_RESULTS_CSV = Path(__file__).parent / 'results' / 'cross_arch_comparison_SLR_0.05.csv'
+
+# CROSS_ARCH_CSV_COLUMNS = [
+#     'dataset', 'expert_model', 'student_model', 'seed',
+#     'method',                # param_mtt | phase_aware_mtt
+#     'phase_boundary',        # detected T+ (empty for param_mtt)
+#     'student_lr',            # MTT inner-loop student learning rate (cfg['student_lr'])
+#     'synthetic_lr',
+#     'n_distill_steps',
+#     'real_mse',
+#     'transfer_mse',
+#     'mse_ratio',             # transfer_mse / real_mse — lower is better
+#     'n_pairs_available',     # expert trajectory checkpoints recorded
+#     'notes',
+# ]
+
+
+# def _append_comparison_row(row: dict, results_csv: Path) -> None:
+#     """Append one result row to results_csv, writing the header on first use."""
+#     results_csv.parent.mkdir(parents=True, exist_ok=True)
+#     file_exists = results_csv.exists()
+#     with open(results_csv, 'a', newline='') as f:
+#         writer = csv.DictWriter(f, fieldnames=CROSS_ARCH_CSV_COLUMNS)
+#         if not file_exists:
+#             writer.writeheader()
+#         writer.writerow({c: row.get(c, '') for c in CROSS_ARCH_CSV_COLUMNS})
+#     print(
+#         f"  [CSV] {row['dataset']} | {row['expert_model']} -> {row['student_model']} | "
+#         f"seed={row['seed']} | method={row['method']} | ratio={row.get('mse_ratio', '?')}"
+#     )
+
+
+# def _comparison_row_exists(
+#     results_csv: Path, dataset: str, expert: str, student: str, seed: int, method: str
+# ) -> bool:
+#     """Resume check — True if this combination already has a completed row."""
+#     if not results_csv.exists():
+#         return False
+#     try:
+#         df = pd.read_csv(results_csv)
+#         mask = (
+#             (df['dataset']       == dataset) &
+#             (df['expert_model']  == expert)  &
+#             (df['student_model'] == student) &
+#             (df['seed']          == seed)    &
+#             (df['method']        == method)  &
+#             (df['transfer_mse'].notna())     &
+#             (df['transfer_mse']  != '')
+#         )
+#         return bool(mask.any())
+#     except Exception:
+#         return False
+
+
+# def run_cross_arch_comparison(
+#     cfg:          dict = None,
+#     seeds:        list = None,
+#     results_csv:  Path = None,
+#     boundary_cfg: dict = None,
+# ) -> None:
+#     """
+#     Cross-architecture param_mtt vs phase_aware_mtt comparison sweep.
+
+#     Loops over ACTIVE_DATASETS × ACTIVE_MODELS (as expert) × seeds, training
+#     the expert and detecting its phase boundary here (generic steps shared
+#     with run_single_experiment), then delegates the dual-method distillation
+#     and cross-architecture student evaluation to
+#     ts_distill.evaluation.cross_arch_evaluation.CrossArchComparisonEvaluator.
+#     """
+#     cfg          = cfg or DISTILL_CONFIG
+#     seeds        = seeds or CROSS_ARCH_SEEDS
+#     results_csv  = results_csv or CROSS_ARCH_RESULTS_CSV
+#     boundary_cfg = boundary_cfg or PHASE_BOUNDARY_CONFIG
+
+#     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+#     print('=' * 80)
+#     print('CROSS-ARCHITECTURE COMPARISON — param_mtt vs phase_aware_mtt')
+#     print('=' * 80)
+
+#     for dataset_name in ACTIVE_DATASETS:
+#         dataset_cfg = DATASET_CONFIGS[dataset_name]
+#         seq_len     = dataset_cfg.get('seq_len',     cfg['seq_len'])
+#         pred_len    = dataset_cfg.get('pred_len',    cfg['pred_len'])
+#         in_features = dataset_cfg.get('in_features', cfg['in_features'])
+#         window_size = seq_len + pred_len
+
+#         csv_path = dataset_cfg['csv_path']
+#         if not Path(csv_path).exists():
+#             print(f"\n[SKIP] {dataset_name}: CSV not found at '{csv_path}'.")
+#             continue
+
+#         print(f"\n{'=' * 60}\n  Dataset: {dataset_name}\n{'=' * 60}")
+
+#         df_raw = pd.read_csv(csv_path)
+#         values = df_raw.iloc[:, 1:].values.astype(np.float32)
+
+#         train_start, train_end, val_start, val_end, test_start, test_end = get_data_splits(
+#             values=values, window_size=window_size, seq_len=seq_len, dataset_cfg=dataset_cfg,
+#         )
+#         scaler = StandardScaler()
+#         scaler.fit(values[train_start:train_end])
+#         data = scaler.transform(values)
+
+#         train_data = torch.tensor(make_windows(data[train_start:train_end], window_size), dtype=torch.float32)
+#         val_data   = torch.tensor(make_windows(data[val_start:val_end],     window_size), dtype=torch.float32)
+#         test_data  = torch.tensor(make_windows(data[test_start:test_end],   window_size), dtype=torch.float32)
+#         raw_train_data = torch.tensor(data[train_start:train_end], dtype=torch.float32)
+
+#         eval_val_loader = TorchDataLoader(val_data, batch_size=cfg['eval_batch_size'], shuffle=False)
+
+#         def make_student_model(model_name, _seq_len=seq_len, _pred_len=pred_len, _in_features=in_features):
+#             return create_model(
+#                 model_type=model_name, seq_len=_seq_len, pred_len=_pred_len,
+#                 in_features=_in_features, model_kwargs=MODEL_CONFIGS[model_name],
+#             )
+
+#         cross_arch_evaluator = CrossArchComparisonEvaluator(
+#             model_factory=make_student_model,
+#             student_archs=ACTIVE_MODELS,
+#             seq_len=seq_len,
+#             pred_len=pred_len,
+#             device=device,
+#         )
+
+#         for expert_name in ACTIVE_MODELS:
+#             for seed in seeds:
+
+#                 methods_needed = ['param_mtt', 'phase_aware_mtt']
+#                 if all(
+#                     _comparison_row_exists(results_csv, dataset_name, expert_name, s, seed, m)
+#                     for s in ACTIVE_MODELS for m in methods_needed
+#                 ):
+#                     print(
+#                         f"\n  [RESUME] {dataset_name} | expert={expert_name} | "
+#                         f"seed={seed} — all rows present, skipping."
+#                     )
+#                     continue
+
+#                 print(
+#                     f"\n{'-' * 60}\n  Expert={expert_name} | Seed={seed}\n{'-' * 60}"
+#                 )
+
+#                 # ── Train expert (shared trajectory for both methods) ─────────
+#                 torch.manual_seed(seed)
+#                 expert_model = make_student_model(expert_name)
+#                 recorder     = SimpleRecorder(record_every=1)
+#                 expert_trainer = Trainer(
+#                     model=expert_model,
+#                     optimizer=torch.optim.SGD(
+#                         expert_model.parameters(), lr=cfg['expert_lr'], momentum=cfg['expert_momentum'],
+#                     ),
+#                     criterion=torch.nn.MSELoss(), device=device, seq_len=seq_len,
+#                 )
+#                 val_loss_recorder = ValLossRecorderCallback(
+#                     eval_fn=lambda: expert_trainer.eval_epoch(eval_val_loader)
+#                 )
+#                 expert_loader = MiniBatchLoader(train_data, batch_size=cfg['batch_size'])
+#                 try:
+#                     expert_trainer.fit(
+#                         dataloader=expert_loader, epochs=cfg['expert_epochs'],
+#                         callbacks=[recorder, SimpleCallback(), val_loss_recorder],
+#                     )
+#                 except Exception as exc:
+#                     print(f"  [FAIL] Expert training: {exc}")
+#                     continue
+
+#                 n_pairs = len(recorder.get_trajectory())
+
+#                 # ── Detect phase boundary from the val-loss curve just recorded ─
+#                 boundary_result = ValLossPlateauDetector(**boundary_cfg).detect(val_loss_recorder.val_losses)
+#                 phase_boundary  = boundary_result['boundary_epoch']
+#                 print(f"  Phase boundary T+ = {phase_boundary}")
+
+#                 # ── Cross-model distillation + evaluation (moved to src) ───────
+#                 synthetic = cross_arch_evaluator.distill_both_methods(
+#                     expert_name=expert_name, recorder=recorder,
+#                     raw_train_data=raw_train_data, val_data=val_data,
+#                     phase_boundary=phase_boundary, cfg=cfg,
+#                 )
+
+#                 cross_arch_evaluator.evaluate_cross_arch(
+#                     expert_name=expert_name, seed=seed,
+#                     synthetic_by_method=synthetic,
+#                     train_data=train_data, val_data=val_data, test_data=test_data,
+#                     phase_boundary=phase_boundary, n_pairs_available=n_pairs, cfg=cfg,
+#                     row_done_fn=lambda student, method: _comparison_row_exists(
+#                         results_csv, dataset_name, expert_name, student, seed, method,
+#                     ),
+#                     on_row=lambda row: _append_comparison_row(
+#                         {**row, 'dataset': dataset_name}, results_csv,
+#                     ),
+#                 )
+
+#     print(f"\nCross-architecture comparison complete. Results: {results_csv}")
+
+
 def main() -> None:
     """
     Loop over the full ACTIVE_DATASETS × ACTIVE_MODELS matrix, run each
@@ -781,11 +1001,11 @@ def main() -> None:
 
 if __name__ == '__main__':
 
-    # Full matrix run — produces metrics_main.csv and metrics_feature_wise.csv.
-    # Edit ACTIVE_DATASETS and ACTIVE_MODELS at the top of the file to control scope.
-    ACTIVE_DATASETS[:] = ['ETTh1']
-    ACTIVE_MODELS[:]   = ['DLinear']
+    # Cross-architecture comparison run — produces results/cross_arch_comparison_SLR_0.05.csv.
+    ACTIVE_DATASETS[:]  = ['ETTh1', 'ETTh2', 'ETTm1', 'ETTm2']
+    ACTIVE_MODELS[:]    = ['DLinear', 'CNN', 'MLP']
+    CROSS_ARCH_SEEDS[:] = [7, 42, 123]
     DISTILL_CONFIG['expert_epochs']   = 80
     DISTILL_CONFIG['eval_max_epochs'] = 50
 
-    main()
+    run_cross_arch_comparison()
