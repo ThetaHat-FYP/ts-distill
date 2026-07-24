@@ -65,9 +65,6 @@ from ts_distill.models.factory import create_model
 
 # ── Framework — distillation ──────────────────────────────────────────────────
 from ts_distill.distillation_core.distillation_algorithm.mtt import MTTDistiller
-from ts_distill.distillation_core.distillation_algorithm.phase_aware_mtt import (
-    PhaseAwareMTTDistiller,
-)
 from ts_distill.distillation_core.initializer.random_sample_initializer import RandomSampleInitializer
 from ts_distill.distillation_core.initializer.geommetry_sequence_initializer import GeometrySequenceInitializer
 from ts_distill.distillation_core.initializer.uncertainty_sequence_initializer import UncertaintySampleInitializer
@@ -83,12 +80,10 @@ INITIALIZER_REGISTRY = {
 # ── Framework — training ──────────────────────────────────────────────────────
 from ts_distill.trainer.trainer.trainer import Trainer
 from ts_distill.trainer.callback.simple_callback import SimpleCallback
-from ts_distill.trainer.callback.val_loss_callback import ValLossRecorderCallback
 
 # ── Framework — trajectory ────────────────────────────────────────────────────
 from ts_distill.trajectory.recorder.simple_recorder import SimpleRecorder
 from ts_distill.trajectory.matcher.mse_matcher import MSEMatcher
-from ts_distill.trajectory.phase_detector.valloss_detector import ValLossPlateauDetector
 
 # ── Framework — evaluation ────────────────────────────────────────────────────
 from ts_distill.evaluation.evaluation import Evaluator
@@ -149,27 +144,6 @@ COMPUTE_METRICS = True
 COMPUTE_HYBRID_MIXING = False
 HYBRID_MIXING_RATIOS  = (0.1, 0.2, 0.5)  # fractions of real data to mix in
 
-# Set True to switch the outer-loop matching loss to phase-aware MTT:
-# parameter matching in the early phase of the expert's trajectory,
-# prediction matching in the late phase. The phase boundary T+ is detected
-# on the fly from the expert's validation-loss curve (see
-# PHASE_BOUNDARY_CONFIG below) — no separate offline detection run needed.
-# Set False (default) to run standard MTT (parameter matching throughout),
-# identical to the pre-existing behaviour of this file.
-USE_PHASE_AWARE_MATCHING = False
-
-# Phase boundary detection (validation-loss plateau — see
-# ts_distill.trajectory.phase_detector.valloss_detector.ValLossPlateauDetector).
-# T+ = epoch of the best smoothed val loss before `patience` consecutive
-# epochs each fail to improve on the best-so-far by `min_delta_frac` (relative).
-# Only used when USE_PHASE_AWARE_MATCHING is True. If no plateau is found,
-# phase_boundary stays None and PhaseAwareMTTDistiller behaves like MTTDistiller.
-PHASE_BOUNDARY_CONFIG = {
-    'smoothing_window': 5,
-    'patience':          5,
-    'min_delta_frac':  0.01,
-}
-
 # =============================================================================
 # DATASET CONFIGURATION
 # Reproduced exactly from run_cycle.py so results are directly comparable.
@@ -198,28 +172,28 @@ DATASET_PERIODS = {
 DATASET_CONFIGS = {
     # ── ETT family (benchmark borders from Informer / DLinear papers) ─────────
     'ETTh1': {
-        'csv_path':    r'C:\fyp\ts-distill\example\ETTh1.csv',
+        'csv_path':    'example/ETTh1.csv',
         'split_mode':  'benchmark_borders',
         'border1s':    [0, 12 * 30 * 24 - 96,       12 * 30 * 24 + 4 * 30 * 24 - 96],
         'border2s':    [12 * 30 * 24, 12 * 30 * 24 + 4 * 30 * 24, 12 * 30 * 24 + 8 * 30 * 24],
         'in_features': 7,
     },
     'ETTh2': {
-        'csv_path':    r'C:\fyp\ts-distill\example\ETTh2.csv',
+        'csv_path':    'example/ETTh2.csv',
         'split_mode':  'benchmark_borders',
         'border1s':    [0, 12 * 30 * 24 - 96,       12 * 30 * 24 + 4 * 30 * 24 - 96],
         'border2s':    [12 * 30 * 24, 12 * 30 * 24 + 4 * 30 * 24, 12 * 30 * 24 + 8 * 30 * 24],
         'in_features': 7,
     },
     'ETTm1': {
-        'csv_path':    r'C:\fyp\ts-distill\example\ETTm1.csv',
+        'csv_path':    'example/ETTm1.csv',
         'split_mode':  'benchmark_borders',
         'border1s':    [0, 12 * 30 * 96 - 96,       12 * 30 * 96 + 4 * 30 * 96 - 96],
         'border2s':    [12 * 30 * 96, 12 * 30 * 96 + 4 * 30 * 96, 12 * 30 * 96 + 8 * 30 * 96],
         'in_features': 7,
     },
     'ETTm2': {
-        'csv_path':    r'C:\fyp\ts-distill\example\ETTm2.csv',
+        'csv_path':    'example/ETTm2.csv',
         'split_mode':  'benchmark_borders',
         'border1s':    [0, 12 * 30 * 96 - 96,       12 * 30 * 96 + 4 * 30 * 96 - 96],
         'border2s':    [12 * 30 * 96, 12 * 30 * 96 + 4 * 30 * 96, 12 * 30 * 96 + 8 * 30 * 96],
@@ -230,7 +204,7 @@ DATASET_CONFIGS = {
     # 70/10/20 ratio split — no standard border indices in literature.
     # Period = 5 (one trading week); seq_len/pred_len inherit global 96/96.
     'exchange_rate': {
-        'csv_path':    r'C:\fyp\ts-distill\example/exchange_rate.csv',
+        'csv_path':    'example/exchange_rate.csv',
         'split_mode':  'ratios',
         'train_ratio': 0.7,
         'val_ratio':   0.1,
@@ -241,7 +215,7 @@ DATASET_CONFIGS = {
     # seq_len=36 overrides the global 96 — weekly data is too sparse for 96.
     # Period = 52 (annual flu season cycle).
     'national_illness': {
-        'csv_path':    r'C:\fyp\ts-distill\example/national_illness.csv',
+        'csv_path':    'example/national_illness.csv',
         'split_mode':  'ratios',
         'train_ratio': 0.6,
         'val_ratio':   0.2,
@@ -254,7 +228,7 @@ DATASET_CONFIGS = {
     # Period = 144 (one day = 6 readings/hour × 24 hours).
     # seq_len/pred_len inherit global 96/96.
     'weather': {
-        'csv_path':    r'C:\fyp\ts-distill\example/weather.csv',
+        'csv_path':    'example/weather.csv',
         'split_mode':  'ratios',
         'train_ratio': 0.7,
         'val_ratio':   0.1,
@@ -416,13 +390,6 @@ def run_single_experiment(
     # Raw continuous training sequence — passed to the distiller and to metrics.
     raw_train_data = torch.tensor(data[train_start:train_end], dtype=torch.float32)
 
-    # Shared val loader — used for expert val-loss curve tracking (phase-aware
-    # boundary detection), MTT best-snapshot selection, and eval-time early
-    # stopping for BOTH the real and synthetic models below.
-    eval_val_loader = TorchDataLoader(
-        val_data, batch_size=cfg['eval_batch_size'], shuffle=False
-    )
-
     # ── Step 2: Train expert and record trajectory ────────────────────────────
     recorder     = SimpleRecorder(record_every=1)
     expert_model = make_model()
@@ -437,17 +404,6 @@ def run_single_experiment(
         device    = device,
         seq_len   = seq_len,
     )
-    expert_callbacks = [recorder, SimpleCallback()]
-
-    # Only track the per-epoch val-loss curve when phase-aware matching is
-    # enabled — it costs one extra val pass per epoch and is otherwise unused.
-    val_loss_recorder = None
-    if use_phase_aware_matching:
-        val_loss_recorder = ValLossRecorderCallback(
-            eval_fn=lambda: expert_trainer.eval_epoch(eval_val_loader)
-        )
-        expert_callbacks.append(val_loss_recorder)
-
     expert_loader = MiniBatchLoader(train_data, batch_size=cfg['batch_size'])
     expert_trainer.fit(
         dataloader = expert_loader,
@@ -459,7 +415,7 @@ def run_single_experiment(
     initializer    = INITIALIZER_REGISTRY[initializer_name]()
     synthetic_init = initializer.initialize_sequence(raw_train_data, cfg['n_synthetic'])
 
-    distiller_kwargs = dict(
+    distiller = MTTDistiller(
         initializer            = initializer,
         matcher                = MSEMatcher(),
         model_factory          = make_model,
@@ -473,11 +429,6 @@ def run_single_experiment(
         seq_len                = seq_len,
         pred_len               = pred_len,
     )
-
-    if use_phase_aware_matching:
-        distiller = PhaseAwareMTTDistiller(**distiller_kwargs, phase_boundary=phase_boundary)
-    else:
-        distiller = MTTDistiller(**distiller_kwargs)
 
     synthetic_sequence = distiller.distill(
         synthetic_init = synthetic_init,
