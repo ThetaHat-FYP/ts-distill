@@ -69,6 +69,16 @@ from ts_distill.distillation_core.distillation_algorithm.phase_aware_mtt import 
     PhaseAwareMTTDistiller,
 )
 from ts_distill.distillation_core.initializer.random_sample_initializer import RandomSampleInitializer
+from ts_distill.distillation_core.initializer.geommetry_sequence_initializer import GeometrySequenceInitializer
+from ts_distill.distillation_core.initializer.uncertainty_sequence_initializer import UncertaintySampleInitializer
+
+# Maps a short initializer key (used by --initializer and the convergence-speed
+# runner scripts) to the initializer class that implements it.
+INITIALIZER_REGISTRY = {
+    'random':      RandomSampleInitializer,
+    'geo':         GeometrySequenceInitializer,
+    'uncertainty': UncertaintySampleInitializer,
+}
 
 # ── Framework — training ──────────────────────────────────────────────────────
 from ts_distill.trainer.trainer.trainer import Trainer
@@ -86,6 +96,9 @@ from ts_distill.evaluation.evaluation import Evaluator
 # ── Framework — temporal metrics (new module) ─────────────────────────────────
 from ts_distill.metrics.aggregator import MetricAggregator
 
+# ── Framework — post-processing (FFT amplitude post-fix) ──────────────────────
+from ts_distill.post_processing import FFTAmplitudePostFix
+
 # ── Framework — hybrid mixing evaluation ──────────────────────────────────────
 from ts_distill.evaluation.hybrid_evaluation.hybrid import (
     BaseHybridEvaluator,
@@ -99,18 +112,36 @@ from ts_distill.evaluation.hybrid_evaluation.hybrid import (
 
 # Datasets to evaluate.
 # Remove entries you don't have CSV files for.
-ACTIVE_DATASETS = ['ETTh1', 'ETTh2', 'ETTm1', 'ETTm2', 'exchange_rate', 'weather']
+ACTIVE_DATASETS = ['ETTh1', 'ETTh2','ETTm1', 'ETTm2']
 
 # Models to evaluate against each dataset.
-ACTIVE_MODELS = ['DLinear', 'LSTM', 'MLP', 'CNN']
+ACTIVE_MODELS = ['DLinear','MLP','CNN']
+
+# Initializer strategy for run_single_experiment. Key into INITIALIZER_REGISTRY:
+# 'random', 'geo', or 'uncertainty'. Override with --initializer on the CLI.
+ACTIVE_INITIALIZER = 'random'
+
+# Seed used by --mode matrix (main()). Run once per seed in (7, 42, 123) to
+# match the fixed-variables requirement, alongside ACTIVE_INITIALIZER.
+# Override with --seed on the CLI.
+MATRIX_SEED = 7
 
 # Distillation method label written to the result tables.
 # Update this when you add temporal-aware losses in Stage 4.
 DISTILLATION_METHOD = 'MTT'
 
+# Seed used by --mode convergence (run_convergence_matrix). All step counts and
+# (dataset, model) pairs share this seed so expert trajectories are comparable.
+CONVERGENCE_SEED = 7
+
+# Distillation-step checkpoints recorded by --mode convergence. This is the
+# x-axis of the downstream-MSE-vs-steps curve used for the AUC comparison
+# across initializer strategies (see distillation_core/initializer/convergence_speed/).
+CONVERGENCE_STEP_COUNTS = [0, 100, 200, 300, 400, 500, 600]
+
 # Set False to skip temporal metric computation and CSV saving.
 # Useful for quick sanity checks that don't need statsmodels.
-COMPUTE_METRICS = False
+COMPUTE_METRICS = True
 
 # Set True to run the hybrid mixing evaluation: trains a model on a mixture of
 # synthetic + real data at each ratio in HYBRID_MIXING_RATIOS and records MSE.
@@ -238,7 +269,7 @@ DATASET_CONFIGS = {
 
 MODEL_CONFIGS = {
     'DLinear': {'individual': False},
-    'LSTM':    {'hidden_dim': 16, 'num_layer': 1},
+    'LSTM':    {'hidden_dim': 64, 'num_layer': 1},
     'MLP':     {},
     'CNN':     {},
 }
@@ -257,11 +288,11 @@ DISTILL_CONFIG = {
     'expert_epochs':         80,
     'expert_lr':           0.01,
     'expert_momentum':      0.9,
-    'n_distill_steps':      1000,
+    'n_distill_steps':      600,
     'n_synthetic':          384,    # synthetic sequence length (timesteps)
-    'synthetic_lr':         5.0,
-    'student_lr':          0.01,
-    'student_steps':         20,
+    'synthetic_lr':         0.01,   # 5
+    'student_lr':          0.01,    # 0.5
+    'student_steps':         50,
     'snapshot_student_steps': 50,
     'batch_size':            64,
     'trajectory_gap':         5,
@@ -310,13 +341,13 @@ def _make_model_factory(model_name: str, cfg: dict):
 
 
 def run_single_experiment(
-    dataset_name:              str,
-    model_name:                str,
-    cfg:                       dict,
-    compute_metrics:           bool = True,
-    compute_hybrid_mixing:     bool = False,
-    use_phase_aware_matching:  bool = False,
-    phase_boundary_cfg:        dict = None,
+    dataset_name:    str,
+    model_name:            str,
+    cfg:                   dict,
+    compute_metrics:       bool = True,
+    compute_hybrid_mixing: bool = False,
+    initializer_name:      str = 'uncertainty',
+    seed:                  int = 123,
 ) -> tuple:
     """
     Run the full MTT pipeline for one (dataset, model) combination.
@@ -328,13 +359,10 @@ def run_single_experiment(
         compute_metrics       (bool): When False, skip temporal metrics.
         compute_hybrid_mixing (bool): When True, run hybrid mixing evaluation across
                                       HYBRID_MIXING_RATIOS and return results.
-        use_phase_aware_matching (bool): When True, detect the expert's phase
-                                      boundary from its validation-loss curve and
-                                      distil with PhaseAwareMTTDistiller instead
-                                      of standard MTTDistiller.
-        phase_boundary_cfg    (dict): kwargs for ValLossPlateauDetector
-                                      (smoothing_window, patience, min_delta_frac).
-                                      Defaults to PHASE_BOUNDARY_CONFIG when None.
+        initializer_name      (str):  Key in INITIALIZER_REGISTRY, e.g. 'random',
+                                      'geo', 'uncertainty'.
+        seed                  (int):  Seed for torch.manual_seed before expert
+                                      training and initializer sampling.
 
     Returns:
         Tuple[List[Dict], Dict, Optional[Dict]]: (feature_rows, main_row, hybrid_row)
@@ -342,7 +370,7 @@ def run_single_experiment(
             main_row     — aggregate result dict.
             hybrid_row   — {dataset, model, hybrid_<r>_mse, ...} or None.
     """
-    torch.manual_seed(7)
+    torch.manual_seed(seed)
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     # ── Resolve per-dataset overrides ─────────────────────────────────────────
@@ -424,27 +452,11 @@ def run_single_experiment(
     expert_trainer.fit(
         dataloader = expert_loader,
         epochs     = cfg['expert_epochs'],
-        callbacks  = expert_callbacks,
-    )
+        callbacks  = [recorder, SimpleCallback()],
+    )   
 
-    # ── Step 2b: Detect phase boundary (phase-aware matching only) ────────────
-    phase_boundary = None
-    if use_phase_aware_matching:
-        detector_cfg     = phase_boundary_cfg or PHASE_BOUNDARY_CONFIG
-        boundary_detector = ValLossPlateauDetector(**detector_cfg)
-        boundary_result   = boundary_detector.detect(val_loss_recorder.val_losses)
-        phase_boundary    = boundary_result['boundary_epoch']
-        print(
-            f"   [PhaseDetector] T+ = {phase_boundary} "
-            f"(best_val_loss={boundary_result['best_val_loss']:.6f}, "
-            f"final_val_loss={boundary_result['final_val_loss']:.6f})"
-            if phase_boundary is not None else
-            "   [PhaseDetector] No plateau found — phase_aware_mtt will run as "
-            "parameter matching throughout (same as standard MTT)."
-        )
-
-    # ── Step 3: Distil synthetic sequence ─────────────────────────────────────
-    initializer    = RandomSampleInitializer()
+    # ── Step 3: Distil synthetic sequence ───
+    initializer    = INITIALIZER_REGISTRY[initializer_name]()
     synthetic_init = initializer.initialize_sequence(raw_train_data, cfg['n_synthetic'])
 
     distiller_kwargs = dict(
@@ -471,6 +483,28 @@ def run_single_experiment(
         synthetic_init = synthetic_init,
         n_steps        = cfg['n_distill_steps'],
         val_data       = val_data,
+    )
+
+# ── POST-FIX + VIZ (remove this whole block to disable) ───────────────
+    from ts_distill.post_processing import FFTAmplitudePostFix
+    from example.experiments.plot_postfix import plot_before_after
+
+    syn_before = synthetic_sequence.detach().clone()          # keep raw distilled
+    syn_after  = torch.tensor(
+        FFTAmplitudePostFix(alpha=0.5).apply(synthetic_sequence, raw_train_data),
+        dtype=torch.float32,
+    )
+    plot_before_after(syn_before, syn_after, raw_train_data,
+                    dataset_name, model_name, results_dir=Path(__file__).parent / 'results')
+
+    synthetic_sequence = syn_after   # feed post-fixed data into evaluation
+    # ──────────────────────────────────────────────────────────────────────
+    
+
+    # Shared val loader — early-stopping signal for BOTH models so convergence
+    # is measured against the same real validation distribution.
+    eval_val_loader = TorchDataLoader(
+        val_data, batch_size=cfg['eval_batch_size'], shuffle=False
     )
 
     # ── Step 4a: Evaluate model trained on real data ──────────────────────────
@@ -569,6 +603,8 @@ def run_single_experiment(
             'dataset':             dataset_name,
             'model':               model_name,
             'distillation_method': DISTILLATION_METHOD,
+            'initializer':         initializer_name,
+            'seed':                seed,
             'n_distill_steps':     cfg['n_distill_steps'],
             'real_mse':            real_mse,
             'transfer_mse':        transfer_mse,
@@ -628,13 +664,31 @@ def save_results(
         pd.DataFrame(main_rows)[MetricAggregator.MAIN_COLUMNS].to_csv(
             main_path, index=False
         )
-        print(f"\nMain table saved    → {main_path}")
+        print(f"\nMain table saved    -> {main_path}")
 
     if feature_rows:
         pd.DataFrame(feature_rows)[MetricAggregator.FEATURE_COLUMNS].to_csv(
             feature_path, index=False
         )
-        print(f"Feature table saved → {feature_path}")
+        print(f"Feature table saved -> {feature_path}")
+
+
+def save_mse_results(main_rows: list, results_dir: Path, initializer_name: str, seed: int) -> None:
+    """
+    Write real_mse and synthetic_mse for every completed (dataset, model) run to
+    results/{initializer_name}_metrics_mse_seed{seed}.csv — one file per
+    (initializer, seed) pair so different strategies/seeds never overwrite or
+    shadow each other.
+    """
+    if not main_rows:
+        return
+    results_dir.mkdir(parents=True, exist_ok=True)
+    path = results_dir / f'{initializer_name}_metrics_mse_seed{seed}.csv'
+    cols = ['dataset', 'model', 'distillation_method', 'initializer', 'seed', 'real_mse', 'transfer_mse']
+    pd.DataFrame(main_rows)[cols].rename(
+        columns={'transfer_mse': 'synthetic_mse'}
+    ).to_csv(path, index=False)
+    print(f"MSE table saved     -> {path}")
 
 
 def save_hybrid_results(hybrid_rows: list, results_dir: Path) -> None:
@@ -650,11 +704,262 @@ def save_hybrid_results(hybrid_rows: list, results_dir: Path) -> None:
         key=lambda c: int(c.split('_')[1]),
     )
     pd.DataFrame(hybrid_rows)[id_cols + ratio_cols].to_csv(path, index=False)
-    print(f"Hybrid table saved  → {path}")
+    print(f"Hybrid table saved  -> {path}")
 
 
 # =============================================================================
-# ENTRY POINT
+# POST-FIX ALPHA SWEEP  (manual, appendable, CPU-friendly)
+# =============================================================================
+
+# Column order for the appendable post-fix CSVs: seed + alpha are added around
+# the standard aggregator columns so the tables are self-describing.
+POSTFIX_MAIN_COLUMNS = (
+    ['seed'] + MetricAggregator.MAIN_COLUMNS[:4] + ['alpha'] + MetricAggregator.MAIN_COLUMNS[4:]
+)
+POSTFIX_FEATURE_COLUMNS = (
+    ['seed'] + MetricAggregator.FEATURE_COLUMNS[:5] + ['alpha'] + MetricAggregator.FEATURE_COLUMNS[5:]
+)
+
+
+def _append_dedup(csv_path: Path, new_rows: list, key_cols: list, columns: list) -> int:
+    """
+    Append rows to a CSV, replacing any existing rows that share the same key.
+
+    This makes manual incremental runs safe: re-running the same
+    (seed, dataset, model, n_distill_steps, alpha) overwrites those rows instead
+    of duplicating them, while rows from other datasets/models/seeds are kept.
+
+    Args:
+        csv_path (Path): Target CSV (created if absent).
+        new_rows (list): List of row dicts to append.
+        key_cols (list): Columns whose combined value identifies a unique row.
+        columns  (list): Full column order to enforce in the output CSV.
+
+    Returns:
+        int: Number of rows written this call.
+    """
+    if not new_rows:
+        return 0
+
+    df_new = pd.DataFrame(new_rows)[columns]
+
+    if csv_path.exists():
+        df_old = pd.read_csv(csv_path)
+        # String-compare keys so 0 vs 0.0 (alpha) and int vs str never mismatch.
+        incoming = set(map(tuple, df_new[key_cols].astype(str).values))
+        keep     = ~df_old[key_cols].astype(str).apply(tuple, axis=1).isin(incoming)
+        df_out   = pd.concat([df_old[keep], df_new], ignore_index=True)
+    else:
+        df_out = df_new
+
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    sort_cols = [c for c in ['model', 'dataset', 'seed', 'alpha'] if c in df_out.columns]
+    df_out = df_out.sort_values(sort_cols).reset_index(drop=True)
+    df_out.to_csv(csv_path, index=False)
+    return len(df_new)
+
+
+def run_postfix_experiment(
+    dataset_name: str,
+    model_name:   str,
+    cfg:          dict,
+    seed:         int,
+    alpha_grid:   list,
+    results_dir:  Path,
+) -> None:
+    """
+    Distil ONCE for (dataset, model, seed), then sweep FFT post-fix alpha values.
+
+    For each alpha the synthetic sequence is post-processed, a fresh probe model
+    is trained on it, and transfer_mse plus the nine temporal metrics are
+    recorded.  Because post-fix is post-hoc, distillation runs only once — the
+    alpha loop only retrains the (cheap) probe.
+
+    Rows are APPENDED to results/postfix_sweep.csv (+ _feature.csv).  Re-running
+    the same (seed, dataset, model, n_distill_steps, alpha) REPLACES those rows,
+    so accidental re-runs are safe.  Change DATASET/MODEL/SEED at the bottom of
+    this file and re-run — new rows append without overwriting previous ones.
+
+    The expert trajectory is cached to results/expert_cache/ so that re-running a
+    combination (e.g. to add more alphas) skips the expensive expert training.
+
+    Args:
+        dataset_name (str):  Key in DATASET_CONFIGS, e.g. 'ETTh1'.
+        model_name   (str):  Key in MODEL_CONFIGS,  e.g. 'DLinear'.
+        cfg          (dict): Merged distillation/eval hyperparameters.
+        seed         (int):  Controls expert, synthetic-init, and probe RNG.
+        alpha_grid   (list): Post-fix blend strengths, e.g. [0.0, 0.1, ..., 1.0].
+                             alpha=0.0 is the distill-only baseline (no post-fix).
+        results_dir  (Path): Directory for the CSVs and the expert cache.
+    """
+    torch.manual_seed(seed)
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    # ── Resolve per-dataset overrides ─────────────────────────────────────────
+    dataset_cfg = DATASET_CONFIGS[dataset_name]
+    seq_len     = dataset_cfg.get('seq_len',     cfg['seq_len'])
+    pred_len    = dataset_cfg.get('pred_len',    cfg['pred_len'])
+    in_features = dataset_cfg.get('in_features', cfg['in_features'])
+    window_size = seq_len + pred_len
+    make_model  = _make_model_factory(
+        model_name, {**cfg, 'seq_len': seq_len, 'pred_len': pred_len, 'in_features': in_features}
+    )
+
+    # ── Step 1: Load and normalise data ───────────────────────────────────────
+    csv_path = dataset_cfg['csv_path']
+    if not Path(csv_path).exists():
+        raise FileNotFoundError(f"CSV not found at '{csv_path}'.")
+    df_raw = pd.read_csv(csv_path)
+    values = df_raw.iloc[:, 1:].values.astype(np.float32)
+
+    train_start, train_end, val_start, val_end, test_start, test_end = get_data_splits(
+        values=values, window_size=window_size, seq_len=seq_len, dataset_cfg=dataset_cfg
+    )
+    scaler = StandardScaler()
+    scaler.fit(values[train_start:train_end])
+    data = scaler.transform(values)
+
+    train_data     = torch.tensor(make_windows(data[train_start:train_end], window_size), dtype=torch.float32)
+    val_data       = torch.tensor(make_windows(data[val_start:val_end],     window_size), dtype=torch.float32)
+    test_data      = torch.tensor(make_windows(data[test_start:test_end],   window_size), dtype=torch.float32)
+    raw_train_data = torch.tensor(data[train_start:train_end], dtype=torch.float32)
+    real_np        = raw_train_data.detach().cpu().numpy()
+
+    eval_val_loader = TorchDataLoader(val_data, batch_size=cfg['eval_batch_size'], shuffle=False)
+
+    # ── Step 2: Train expert (cached) ─────────────────────────────────────────
+    cache_dir  = results_dir / 'expert_cache'
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_file = cache_dir / f"expert_{dataset_name}_{model_name}_seed{seed}_ep{cfg['expert_epochs']}.pt"
+
+    recorder = SimpleRecorder(record_every=1)
+    if cache_file.exists():
+        recorder.load_buffer(str(cache_file))
+    else:
+        expert_model = make_model()
+        Trainer(
+            model     = expert_model,
+            optimizer = torch.optim.SGD(
+                expert_model.parameters(), lr=cfg['expert_lr'], momentum=cfg['expert_momentum']
+            ),
+            criterion = torch.nn.MSELoss(),
+            device    = device,
+            seq_len   = seq_len,
+        ).fit(
+            dataloader = MiniBatchLoader(train_data, batch_size=cfg['batch_size']),
+            epochs     = cfg['expert_epochs'],
+            callbacks  = [recorder, SimpleCallback()],
+        )
+        recorder.save_buffer(str(cache_file))
+
+    # ── Step 3: Distil ONCE ───────────────────────────────────────────────────
+    initializer    = RandomSampleInitializer()
+    synthetic_init = initializer.initialize_sequence(raw_train_data, cfg['n_synthetic'])
+    distiller = MTTDistiller(
+        initializer            = initializer,
+        matcher                = MSEMatcher(),
+        model_factory          = make_model,
+        expert_recorder        = recorder,
+        expert_epochs          = cfg['trajectory_gap'],
+        syn_batch_size         = cfg['batch_size'],
+        synthetic_lr           = cfg['synthetic_lr'],
+        student_lr             = cfg['student_lr'],
+        student_steps          = cfg['student_steps'],
+        snapshot_student_steps = cfg['snapshot_student_steps'],
+        seq_len                = seq_len,
+        pred_len               = pred_len,
+    )
+    synthetic_distilled = distiller.distill(
+        synthetic_init = synthetic_init,
+        n_steps        = cfg['n_distill_steps'],
+        val_data       = val_data,
+    )
+    syn_distilled_np = synthetic_distilled.detach().cpu().numpy()
+
+    # ── Step 4: Real-data baseline (trained once, reused for every alpha) ──────
+    torch.manual_seed(seed + 100)
+    real_model = make_model()
+    Trainer(
+        model     = real_model,
+        optimizer = torch.optim.Adam(real_model.parameters(), lr=cfg['eval_lr']),
+        criterion = torch.nn.MSELoss(),
+        device    = device,
+        seq_len   = seq_len,
+    ).fit(
+        dataloader = TorchDataLoader(train_data, batch_size=cfg['eval_batch_size'], shuffle=True),
+        epochs     = cfg['eval_max_epochs'],
+        val_loader = eval_val_loader,
+        patience   = cfg['early_stop_patience'],
+    )
+    evaluator = Evaluator(seq_len=seq_len, batch_size=cfg['eval_batch_size'])
+    real_mse  = evaluator.test_on_real(real_model, test_data.to(device))['MSE']
+
+    # ── Metric setup ──────────────────────────────────────────────────────────
+    period     = DATASET_PERIODS[dataset_name]
+    n_lags     = min(max(2 * period, cfg['acf_n_lags']), cfg['n_synthetic'] - 1)
+    aggregator = MetricAggregator(period=period, n_lags=n_lags)
+
+    # ── Step 5: Sweep alpha (post-fix + probe eval + metrics) ─────────────────
+    print(f"\n{'=' * 70}")
+    print(f"POST-FIX SWEEP  seed={seed}  {dataset_name} × {model_name}  "
+          f"steps={cfg['n_distill_steps']}  real_mse={real_mse:.6f}")
+    print(f"{'=' * 70}")
+    print(f"{'alpha':>6}  {'transfer_mse':>14}  {'fft_distance':>14}  "
+          f"{'freq_rank_err':>14}  {'acf_short':>10}")
+    print("-" * 70)
+
+    main_rows, feature_rows_all = [], []
+    for i, alpha in enumerate(alpha_grid):
+        if alpha == 0.0:
+            syn_fixed_np = syn_distilled_np
+        else:
+            syn_fixed_np = FFTAmplitudePostFix(alpha=alpha).apply(syn_distilled_np, real_np)
+
+        syn_windows = torch.tensor(make_windows(syn_fixed_np, window_size), dtype=torch.float32)
+        torch.manual_seed(seed + 200 + i)
+        probe = make_model()
+        Trainer(
+            model     = probe,
+            optimizer = torch.optim.Adam(probe.parameters(), lr=cfg['eval_lr']),
+            criterion = torch.nn.MSELoss(),
+            device    = device,
+            seq_len   = seq_len,
+        ).fit(
+            dataloader = TorchDataLoader(syn_windows, batch_size=cfg['eval_batch_size'], shuffle=True),
+            epochs     = cfg['eval_max_epochs'],
+            val_loader = eval_val_loader,
+            patience   = cfg['early_stop_patience'],
+        )
+        transfer_mse = evaluator.test_on_real(probe, test_data.to(device))['MSE']
+
+        feat_rows, main_row = aggregator.compute_all(
+            real                = real_np,
+            synthetic           = syn_fixed_np,
+            real_mse            = real_mse,
+            transfer_mse        = transfer_mse,
+            dataset             = dataset_name,
+            model               = model_name,
+            distillation_method = DISTILLATION_METHOD,
+            n_distill_steps     = cfg['n_distill_steps'],
+        )
+        main_rows.append({'seed': seed, 'alpha': alpha, **main_row})
+        feature_rows_all.extend({'seed': seed, 'alpha': alpha, **r} for r in feat_rows)
+
+        print(f"{alpha:>6.2f}  {transfer_mse:>14.6f}  {main_row['fft_distance']:>14.4f}  "
+              f"{main_row['freq_rank_error']:>14.4f}  {main_row['acf_short']:>10.4f}")
+
+    # ── Step 6: Append (dedup) to CSVs ────────────────────────────────────────
+    key_cols = ['seed', 'dataset', 'model', 'n_distill_steps', 'alpha']
+    n_main = _append_dedup(results_dir / 'postfix_sweep.csv',
+                           main_rows, key_cols, POSTFIX_MAIN_COLUMNS)
+    n_feat = _append_dedup(results_dir / 'postfix_sweep_feature.csv',
+                           feature_rows_all, key_cols, POSTFIX_FEATURE_COLUMNS)
+    print(f"\nAppended {n_main} rows → {results_dir / 'postfix_sweep.csv'}")
+    print(f"Appended {n_feat} rows → {results_dir / 'postfix_sweep_feature.csv'}")
+
+
+# =============================================================================
+# POST-FIX ALPHA SWEEP  (manual, appendable, CPU-friendly)
 # =============================================================================
 
 def run_budget_sensitivity(
@@ -684,54 +989,150 @@ def run_budget_sensitivity(
 
     for i, n_steps in enumerate(step_counts, 1):
         print(f"\n{'=' * 70}")
-        print(f"[{i}/{total}]  {dataset_name}  x  {model_name}  —  n_steps={n_steps}")
+        print(f"[{i}/{total}]  {dataset_name}  x  {model_name}  x  {initializer_name}  —  n_steps={n_steps}")
         print(f"{'=' * 70}")
         try:
-            cfg = {**DISTILL_CONFIG, 'n_distill_steps': n_steps}
-            feature_rows, main_row, _ = run_single_experiment(
-                dataset_name          = dataset_name,
-                model_name            = model_name,
-                cfg                   = cfg,
-                compute_metrics       = True,
-                compute_hybrid_mixing = False,
+            synthetic_sequence = checkpoints[n_steps]
+            syn_windows = torch.tensor(
+                make_windows(synthetic_sequence.cpu().numpy(), window_size), dtype=torch.float32,
             )
+            torch.manual_seed(1)
+            syn_model   = make_model()
+            syn_trainer = Trainer(
+                model     = syn_model,
+                optimizer = torch.optim.Adam(syn_model.parameters(), lr=cfg['eval_lr']),
+                criterion = torch.nn.MSELoss(),
+                device    = device,
+                seq_len   = seq_len,
+            )
+            syn_trainer.fit(
+                dataloader = TorchDataLoader(syn_windows, batch_size=cfg['eval_batch_size'], shuffle=True),
+                epochs     = cfg['eval_max_epochs'],
+                val_loader = eval_val_loader,
+                patience   = cfg['early_stop_patience'],
+            )
+            transfer_mse = evaluator.test_on_real(syn_model, test_data.to(device))['MSE']
+
+            main_row = {
+                'dataset':             dataset_name,
+                'model':               model_name,
+                'distillation_method': DISTILLATION_METHOD,
+                'initializer':         initializer_name,
+                'seed':                seed,
+                'n_distill_steps':     n_steps,
+                'real_mse':            real_mse,
+                'transfer_mse':        transfer_mse,
+            }
+
+            if compute_metrics:
+                real_np = raw_train_data.detach().cpu().numpy()
+                syn_np  = synthetic_sequence.detach().cpu().numpy()
+                n_lags  = min(max(2 * period, cfg['acf_n_lags']), cfg['n_synthetic'] - 1)
+                aggregator = MetricAggregator(period=period, n_lags=n_lags)
+                feature_rows, metrics_row = aggregator.compute_all(
+                    real                = real_np,
+                    synthetic           = syn_np,
+                    real_mse            = real_mse,
+                    transfer_mse        = transfer_mse,
+                    dataset             = dataset_name,
+                    model               = model_name,
+                    distillation_method = DISTILLATION_METHOD,
+                    n_distill_steps     = n_steps,
+                )
+                main_row.update(metrics_row)
+                all_features.extend(feature_rows)
+
             all_main.append(main_row)
-            all_features.extend(feature_rows)
-            print(
-                f"\n  steps={n_steps}  transfer_mse={main_row['transfer_mse']:.6f}  "
-                f"acf_short={main_row['acf_short']:.4f}  acf_long={main_row['acf_long']:.4f}  "
-                f"fft_distance={main_row['fft_distance']:.4f}  trend_error={main_row['trend_error']:.4f}"
-            )
+            msg = f"\n  steps={n_steps}  transfer_mse={transfer_mse:.6f}"
+            if compute_metrics:
+                msg += (
+                    f"  acf_short={main_row['acf_short']:.4f}  acf_long={main_row['acf_long']:.4f}  "
+                    f"fft_distance={main_row['fft_distance']:.4f}  trend_error={main_row['trend_error']:.4f}"
+                )
+            print(msg)
         except Exception as exc:
             print(f"\n  [SKIP] n_steps={n_steps} failed: {exc}")
             continue
 
     results_dir.mkdir(parents=True, exist_ok=True)
+    main_df = pd.DataFrame()
     if all_main:
-        pd.DataFrame(all_main)[MetricAggregator.MAIN_COLUMNS].to_csv(
-            results_dir / 'metrics_budget_sensitivity.csv', index=False
-        )
-        print(f"\nBudget sensitivity saved → {results_dir / 'metrics_budget_sensitivity.csv'}")
-    if all_features:
+        name = output_name or f'{initializer_name}_convergence_{dataset_name}_{model_name}_seed{seed}.csv'
+        cols = (MetricAggregator.MAIN_COLUMNS if compute_metrics else
+                ['dataset', 'model', 'distillation_method', 'initializer', 'seed', 'n_distill_steps', 'real_mse', 'transfer_mse'])
+        main_df = pd.DataFrame(all_main)[cols]
+        main_df.to_csv(results_dir / name, index=False)
+        print(f"\nBudget sensitivity saved -> {results_dir / name}")
+    if compute_metrics and all_features:
+        feature_name = (output_name or f'{initializer_name}_{dataset_name}_{model_name}_seed{seed}').replace('.csv', '') + '_feature.csv'
         pd.DataFrame(all_features)[MetricAggregator.FEATURE_COLUMNS].to_csv(
-            results_dir / 'metrics_budget_sensitivity_feature.csv', index=False
+            results_dir / feature_name, index=False
         )
-        print(f"Budget feature table    → {results_dir / 'metrics_budget_sensitivity_feature.csv'}")
+        print(f"Budget feature table    -> {results_dir / feature_name}")
+
+    return main_df
+
+
+def run_convergence_matrix() -> None:
+    """
+    Convergence-speed sweep: loop over ACTIVE_DATASETS × ACTIVE_MODELS, running
+    run_budget_sensitivity for each pair with ACTIVE_INITIALIZER and
+    CONVERGENCE_SEED. Writes one steps-vs-MSE CSV per (dataset, model) pair to
+    results/{ACTIVE_INITIALIZER}_convergence_{dataset}_{model}_seed{CONVERGENCE_SEED}.csv.
+
+    After running this, use the matching *_curve.py script under
+    ts_distill/distillation_core/initializer/convergence_speed/ (random_curve.py,
+    geo_curve.py, uncertainty_curve.py) to compute the AUC and plot the curve
+    for the strategy you just ran.
+    """
+    results_dir = Path(__file__).parent / 'results'
+    total = len(ACTIVE_DATASETS) * len(ACTIVE_MODELS)
+    done  = 0
+
+    for dataset_name in ACTIVE_DATASETS:
+        for model_name in ACTIVE_MODELS:
+            done += 1
+            print(f"\n{'=' * 70}")
+            print(f"[{done}/{total}]  {dataset_name}  x  {model_name}  x  {ACTIVE_INITIALIZER}  (convergence sweep)")
+            print(f"{'=' * 70}")
+            run_budget_sensitivity(
+                dataset_name     = dataset_name,
+                model_name       = model_name,
+                step_counts      = CONVERGENCE_STEP_COUNTS,
+                results_dir      = results_dir,
+                initializer_name = ACTIVE_INITIALIZER,
+                seed             = CONVERGENCE_SEED,
+            )
+
+    print(f"\nConvergence matrix complete. {total} (dataset, model) combination(s) processed.")
 
 
 def main() -> None:
     """
-    Loop over the full ACTIVE_DATASETS × ACTIVE_MODELS matrix, run each
-    combination, and collect results into both CSV files.
-
-    A try/except around each combination means a single failed run (e.g. a
-    missing CSV file) does not abort the entire matrix — the error is logged
-    and the loop continues.
+    Loop over ACTIVE_DATASETS × ACTIVE_MODELS.  Saves
+    results/{ACTIVE_INITIALIZER}_metrics_mse_seed{MATRIX_SEED}.csv after every
+    successful run; skips already-completed pairs so interrupted runs can be
+    resumed by re-running the same command. The file is named after both
+    ACTIVE_INITIALIZER and MATRIX_SEED so switching either and re-running never
+    overwrites or "skips" a pair that was actually completed under a different
+    strategy/seed.
     """
-    results_dir  = Path(__file__).parent / 'results'
-    all_main     = []
-    all_features = []
-    all_hybrid   = []
+    results_dir = Path(__file__).parent / 'results'
+    mse_path    = results_dir / f'{ACTIVE_INITIALIZER}_metrics_mse_seed{MATRIX_SEED}.csv'
+
+    # Load any previous results so we can resume mid-matrix
+    all_main: list = []
+    completed: set = set()
+    if mse_path.exists():
+        existing = pd.read_csv(mse_path).rename(
+            columns={'synthetic_mse': 'transfer_mse'}
+        ).to_dict('records')
+        all_main  = existing
+        completed = {(r['dataset'], r['model']) for r in existing}
+        print(f"Resuming: {len(completed)} combination(s) already done.")
+
+    all_features: list = []
+    all_hybrid:   list = []
 
     total = len(ACTIVE_DATASETS) * len(ACTIVE_MODELS)
     done  = 0
@@ -739,37 +1140,39 @@ def main() -> None:
     for dataset_name in ACTIVE_DATASETS:
         for model_name in ACTIVE_MODELS:
             done += 1
-            header = f"[{done}/{total}]  {dataset_name}  x  {model_name}"
+
+            if (dataset_name, model_name) in completed:
+                print(f"[{done}/{total}]  {dataset_name} x {model_name}  — already done, skipping")
+                continue
+
             print(f"\n{'=' * 70}")
-            print(header)
+            print(f"[{done}/{total}]  {dataset_name}  x  {model_name}")
             print(f"{'=' * 70}")
 
             try:
                 feature_rows, main_row, hybrid_row = run_single_experiment(
-                    dataset_name              = dataset_name,
-                    model_name                = model_name,
-                    cfg                       = DISTILL_CONFIG,
-                    compute_metrics           = COMPUTE_METRICS,
-                    compute_hybrid_mixing     = COMPUTE_HYBRID_MIXING,
-                    use_phase_aware_matching  = USE_PHASE_AWARE_MATCHING,
-                    phase_boundary_cfg        = PHASE_BOUNDARY_CONFIG,
+                    dataset_name          = dataset_name,
+                    model_name            = model_name,
+                    cfg                   = DISTILL_CONFIG,
+                    compute_metrics       = COMPUTE_METRICS,
+                    compute_hybrid_mixing = COMPUTE_HYBRID_MIXING,
+                    initializer_name      = ACTIVE_INITIALIZER,
+                    seed                  = MATRIX_SEED,
                 )
                 all_main.append(main_row)
                 all_features.extend(feature_rows)
                 if hybrid_row is not None:
                     all_hybrid.append(hybrid_row)
 
-                if COMPUTE_METRICS:
-                    print(
-                        f"\n  real_mse={main_row['real_mse']:.6f}  "
-                        f"transfer_mse={main_row['transfer_mse']:.6f}  "
-                        f"acf_short={main_row['acf_short']:.4f}  "
-                        f"acf_long={main_row['acf_long']:.4f}"
-                    )
+                # Always save MSE results after each run
+                save_mse_results(all_main, results_dir, ACTIVE_INITIALIZER, MATRIX_SEED)
+                print(
+                    f"\n  real_mse={main_row['real_mse']:.6f}  "
+                    f"synthetic_mse={main_row['transfer_mse']:.6f}"
+                )
 
             except Exception as exc:
                 print(f"\n  [SKIP] {dataset_name} x {model_name} failed: {exc}")
-                continue
 
     if COMPUTE_METRICS:
         save_results(all_main, all_features, results_dir)
@@ -780,12 +1183,58 @@ def main() -> None:
 
 
 if __name__ == '__main__':
+    # ── Select run mode ───────────────────────────────────────────────────────
+    # 'postfix' — Manual post-fix alpha sweep for ONE (seed, dataset, model).
+    #             Distils once, sweeps alpha, APPENDS to postfix_sweep.csv.
+    #             Change DATASET/MODEL/SEED below and re-run to accumulate rows.
+    # 'budget'  — H0 budget sensitivity: one (dataset × model) × N step counts
+    # 'full'    — Full matrix: all ACTIVE_DATASETS × ACTIVE_MODELS at 300 steps
+    RUN_MODE = 'postfix'
 
-    # Full matrix run — produces metrics_main.csv and metrics_feature_wise.csv.
-    # Edit ACTIVE_DATASETS and ACTIVE_MODELS at the top of the file to control scope.
-    ACTIVE_DATASETS[:] = ['ETTh1']
-    ACTIVE_MODELS[:]   = ['DLinear']
-    DISTILL_CONFIG['expert_epochs']   = 80
-    DISTILL_CONFIG['eval_max_epochs'] = 50
+    results_dir = Path(__file__).parent / 'results'
 
-    main()
+    if RUN_MODE == 'postfix':
+        # ── Manual run knobs — edit these, then run the file ──────────────────
+        # Workflow: fix SEED + MODEL, sweep all 5 datasets one at a time by
+        # changing DATASET and re-running.  Each run appends its alpha rows to
+        # results/postfix_sweep.csv without overwriting earlier datasets.
+        # Then change MODEL and repeat the 5 datasets.  Finally bump SEED.
+        SEED       = 123
+        DATASET    = 'weather'      # ETTh1 | ETTh2 | ETTm1 | ETTm2 | weather
+        MODEL      = 'CNN'    # MLP | DLinear | CNN
+        ALPHA_GRID = [0.0, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0]
+
+        DISTILL_CONFIG['n_distill_steps'] = 300
+        DISTILL_CONFIG['expert_epochs']   = 80
+        DISTILL_CONFIG['eval_max_epochs'] = 100   # early stopping fires well before
+
+        run_postfix_experiment(
+            dataset_name = DATASET,
+            model_name   = MODEL,
+            cfg          = DISTILL_CONFIG,
+            seed         = SEED,
+            alpha_grid   = ALPHA_GRID,
+            results_dir  = results_dir,
+        )
+
+    elif RUN_MODE == 'budget':
+        # H0 validation: shows how metrics change as distillation budget grows.
+        # Step 0 = pure initialization baseline (no MTT optimization).
+        # Fixed seed (42) inside run_single_experiment means expert trajectory
+        # and initialization are identical across all step counts.
+        DISTILL_CONFIG['expert_epochs']   = 80
+        DISTILL_CONFIG['eval_max_epochs'] = 100
+        run_budget_sensitivity(
+            dataset_name = 'ETTh2',
+            model_name   = 'MLP',
+            step_counts  = [0,300],
+            results_dir  = results_dir,
+        )
+
+    elif RUN_MODE == 'full':
+        # Full matrix run — produces metrics_main.csv and metrics_feature_wise.csv.
+        # Edit ACTIVE_DATASETS and ACTIVE_MODELS at the top of the file to control scope.
+        DISTILL_CONFIG['n_distill_steps'] = 100
+        DISTILL_CONFIG['expert_epochs']   = 80
+        DISTILL_CONFIG['eval_max_epochs'] = 60
+        main()
