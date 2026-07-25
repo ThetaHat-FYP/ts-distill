@@ -1,8 +1,7 @@
 """
-ratio_predictor.py  (FIXED)
+ratio_predictor.py
 ============================
-Predicts the optimal mixing ratio r* for any new dataset-architecture
-combination without running a full sweep.
+Predicts the optimal mixing ratio r* for any new dataset-architecture.
 
 Usage:
     from ratio_predictor import predict_r_star
@@ -15,149 +14,10 @@ Usage:
         synthetic   = synthetic_seq,    # numpy array shape (M, features)
     )
     print(f"Recommended r* = {r_star}%")
-
-Standalone demo (annotates existing mixing curves with predicted r*):
-    python -m example.experiments.ratio_predictor
-    (run from anywhere — paths are resolved relative to this file, not cwd)
 """
 
-from pathlib import Path
-
 import numpy as np
-import pandas as pd
-from sklearn.linear_model import LinearRegression
 from statsmodels.tsa.stattools import acf as compute_acf
-
-# Output/input data stays under example/experiments/ even though this module
-# now lives in src/. __file__ is src/ts_distill/evaluation/hybrid_evaluation/
-# ratio_predictor.py, so 4 parents up is the project root.
-_EXPERIMENTS_DIR = Path(__file__).resolve().parents[4] / 'example' / 'experiments'
-
-# ─────────────────────────────────────────────────────────────────
-# REGRESSION-BASED PREDICTOR
-# ─────────────────────────────────────────────────────────────────
-
-_REGRESSION_MODEL_CACHE: dict = {}
-_DEFAULT_REGRESSION_TRAINING_PATH = _EXPERIMENTS_DIR / 'results' / 'h2_mixing_strategy_results.csv'
-
-
-def _build_regression_features(
-    synth_mse: float,
-    real_mse: float,
-    model_name: str,
-    dataset_name: str,
-) -> pd.DataFrame:
-    """Create a feature frame for the regression-based ratio predictor."""
-    error_score = measure_error_ratio(synth_mse, real_mse)
-    mse_gap_ratio = (max(real_mse, 1e-8) - max(synth_mse, 1e-8)) / max(real_mse, 1e-8)
-
-    row = pd.DataFrame([
-        {
-            'synth_mse': float(synth_mse),
-            'real_mse': float(real_mse),
-            'error_ratio_score': float(error_score),
-            'mse_gap_ratio': float(max(0.0, min(1.0, mse_gap_ratio))),
-            'model': model_name,
-            'dataset': dataset_name,
-        }
-    ])
-    return row
-
-
-def _fit_ratio_regression_model(training_data_path: Path | str | None = None):
-    """Fit a simple linear regression model from historical ratio results."""
-    path = Path(training_data_path or _DEFAULT_REGRESSION_TRAINING_PATH)
-    key = str(path)
-
-    if not path.exists():
-        return None, None
-
-    mtime = path.stat().st_mtime
-    cached = _REGRESSION_MODEL_CACHE.get(key)
-    if cached is not None and cached[0] == mtime:
-        return cached[1], cached[2]
-
-    df = pd.read_csv(path)
-    target_column = None
-    for candidate in ('best_ratio', 'h2_r_star_pct', 'h2_r_star_discrete'):
-        if candidate in df.columns:
-            target_column = candidate
-            break
-
-    if target_column is None:
-        return None, None
-
-    training_df = df[['synth_mse', 'real_mse', 'dataset', 'model', target_column]].copy()
-    training_df = training_df.dropna()
-    if len(training_df) < 5:
-        return None, None
-
-    training_df['error_ratio_score'] = training_df.apply(
-        lambda row: measure_error_ratio(float(row['synth_mse']), float(row['real_mse'])),
-        axis=1,
-    )
-    training_df['mse_gap_ratio'] = (
-        training_df['real_mse'] - training_df['synth_mse']
-    ).clip(lower=0.0) / training_df['real_mse'].replace(0, np.nan).fillna(1.0)
-
-    feature_df = pd.get_dummies(
-        training_df[['dataset', 'model']], prefix=['dataset', 'model']
-    )
-    feature_df['synth_mse'] = training_df['synth_mse'].astype(float)
-    feature_df['real_mse'] = training_df['real_mse'].astype(float)
-    feature_df['error_ratio_score'] = training_df['error_ratio_score'].astype(float)
-    feature_df['mse_gap_ratio'] = training_df['mse_gap_ratio'].astype(float)
-
-    model = LinearRegression()
-    model.fit(feature_df, training_df[target_column].astype(float))
-    _REGRESSION_MODEL_CACHE[key] = (mtime, model, feature_df.columns.tolist())
-    return model, feature_df.columns.tolist()
-
-
-def predict_r_star_regression(
-    synth_mse: float,
-    real_mse: float,
-    model_name: str,
-    dataset_name: str,
-    real_train: np.ndarray,
-    synthetic: np.ndarray,
-    training_data_path: Path | str | None = None,
-    verbose: bool = True,
-) -> int:
-    """Predict the ratio using a simple regression model trained from prior sweep data."""
-    model, feature_columns = _fit_ratio_regression_model(training_data_path)
-    if model is None or feature_columns is None:
-        if verbose:
-            print('  [Regression] No suitable training data found; falling back to heuristic predictor.')
-        return predict_r_star(
-            synth_mse=synth_mse,
-            real_mse=real_mse,
-            model_name=model_name,
-            real_train=real_train,
-            synthetic=synthetic,
-            verbose=False,
-        )
-
-    input_df = _build_regression_features(synth_mse, real_mse, model_name, dataset_name)
-
-    feature_df = pd.get_dummies(
-        input_df[['dataset', 'model']], prefix=['dataset', 'model']
-    )
-    feature_df['synth_mse'] = input_df['synth_mse'].astype(float)
-    feature_df['real_mse'] = input_df['real_mse'].astype(float)
-    feature_df['error_ratio_score'] = input_df['error_ratio_score'].astype(float)
-    feature_df['mse_gap_ratio'] = input_df['mse_gap_ratio'].astype(float)
-
-    input_df = feature_df.reindex(columns=feature_columns, fill_value=0.0)
-
-    predicted_ratio = float(model.predict(input_df)[0])
-    predicted_ratio = int(round(max(1, min(100, predicted_ratio))))
-
-    if verbose:
-        print(f'  [Regression] Predicted ratio = {predicted_ratio}%')
-
-    return predicted_ratio
-
 
 # ─────────────────────────────────────────────────────────────────
 # MEASURE A — Distillation Error Ratio
@@ -177,8 +37,6 @@ def measure_error_ratio(synth_mse: float, real_mse: float) -> float:
     error_ratio = synth_mse / real_mse
 
     # Normalise: cap contribution at error_ratio = 5x
-    # Beyond 5x the distillation has completely failed
-    # and we already know we need maximum real data
     score = min(error_ratio / 5.0, 1.0)
 
     return round(score, 4)
@@ -205,7 +63,7 @@ def measure_divergence(
         1.0 = synthetic completely drifted away
     """
     real_mean = real_train.mean()
-    real_std  = real_train.std() + 1e-8   # avoid division by zero
+    real_std  = real_train.std() + 1e-8
 
     syn_mean  = synthetic.mean()
     syn_std   = synthetic.std()
@@ -360,11 +218,10 @@ def measure_arch_sensitivity(model_name: str) -> float:
 # COMBINE — Quality Demand Score
 # ─────────────────────────────────────────────────────────────────
 
-# Default weights — calibrated from 24-cell study
+# Default weights — calibrated from a 24-cell study.
+# NOTE: these are a reasonable manually-chosen prior, not a statistically
+# fit result.
 # (error_ratio, divergence, structure_loss, arch_sensitivity)
-# NOTE: no fitting code ships alongside this constant. Treat these as a
-# reasonable manually-chosen prior, not a statistically fit result, until
-# an actual regression against h2_best_ratios.csv is run to justify them.
 DEFAULT_WEIGHTS = (0.40, 0.25, 0.20, 0.15)
 
 def compute_quality_demand(
@@ -401,80 +258,29 @@ def compute_quality_demand(
 # PREDICT — Map Quality Demand to r* (architecture-aware)
 # ─────────────────────────────────────────────────────────────────
 
-# FIX 4: grid now spans the FULL 1-100 range instead of capping at 50,
-# so a catastrophic-failure quality_demand can recommend pure real data.
+# Grid spans the full 1-100 range, so a catastrophic-failure
+# quality_demand can recommend pure real data.
 RATIO_GRID = list(range(1, 101))
 
-# FIX 3: minimum spread enforced on any architecture-specific range so
-# quality_demand always has room to move the prediction. If the observed
-# [min_best_r_pct, max_best_r_pct] from h2_per_arch_summary.csv is
-# narrower than this, it gets symmetrically widened.
+# Minimum spread enforced on any architecture-specific range so
+# quality_demand always has room to move the prediction. If a caller-
+# supplied [r_min, r_max] is narrower than this, it gets symmetrically
+# widened.
 MIN_RANGE_SPREAD = 20
 
-# FIX 1: generic fallback is now the full grid, not a hardcoded [1, 50].
-# This is used only when no architecture-specific range is available yet
-# (e.g. the very first run, before h2_experiment.py has ever produced
-# h2_per_arch_summary.csv).
+# Used whenever no architecture-specific range is supplied for a model.
 GENERIC_FALLBACK_RANGE = (1, 100)
-
-H2_SUMMARY_PATH = _EXPERIMENTS_DIR / 'results' / 'h2_results' / 'h2_per_arch_summary.csv'
-
-# Internal cache: {path_str: (mtime, {model: (r_min, r_max)})}
-# Re-read only when the file's mtime changes — cheap, but never stale
-# within a single process (FIX 2).
-_ARCH_RANGE_CACHE: dict = {}
-
-# Tracks which model names we've already warned about, so the warning
-# for FIX 1 prints once per model per process rather than spamming.
-_WARNED_MODELS: set = set()
-
-
-def load_arch_ratio_range(path: Path = H2_SUMMARY_PATH, force_reload: bool = False) -> dict:
-    """
-    Build {model_name: (min_r_star, max_r_star)} from h2_per_arch_summary.csv.
-
-    min_r = lowest best-ratio ever observed for this architecture (min_best_r_pct)
-    max_r = highest best-ratio ever observed for this architecture (max_best_r_pct)
-
-    FIX 2: Unlike the original (which cached this once at import time),
-    this re-reads the file whenever its mtime has changed, so a fresh
-    h2_experiment.py run is picked up automatically on the next call
-    within the same process — no reload needed.
-
-    Returns an empty dict if the CSV doesn't exist yet (e.g. h2_experiment.py
-    hasn't been run) — predict_r_star() then falls back to
-    GENERIC_FALLBACK_RANGE for every model, with a one-time warning.
-    """
-    path = Path(path)
-    key = str(path)
-
-    if not path.exists():
-        _ARCH_RANGE_CACHE.pop(key, None)
-        return {}
-
-    mtime = path.stat().st_mtime
-    cached = _ARCH_RANGE_CACHE.get(key)
-    if cached is not None and not force_reload and cached[0] == mtime:
-        return cached[1]
-
-    df = pd.read_csv(path)
-    ranges = {
-        row['model']: (int(row['min_best_r_pct']), int(row['max_best_r_pct']))
-        for _, row in df.iterrows()
-    }
-    _ARCH_RANGE_CACHE[key] = (mtime, ranges)
-    return ranges
 
 
 def _resolve_range(model_name: str, arch_ratio_range: dict) -> tuple:
     """
     Resolve the (r_min, r_max) range to use for a given model, applying
-    FIX 1 (loud fallback warning) and FIX 3 (minimum spread enforcement).
+    minimum spread enforcement, or falling back to the generic range.
     """
-    if model_name and model_name in arch_ratio_range:
+    if model_name and arch_ratio_range and model_name in arch_ratio_range:
         r_min, r_max = arch_ratio_range[model_name]
 
-        # FIX 3: widen degenerate or overly narrow ranges so quality_demand
+        # Widen degenerate or overly narrow ranges so quality_demand
         # still has an effect, instead of always returning the same ratio.
         spread = r_max - r_min
         if spread < MIN_RANGE_SPREAD:
@@ -491,21 +297,6 @@ def _resolve_range(model_name: str, arch_ratio_range: dict) -> tuple:
 
         return r_min, r_max
 
-    # FIX 1: no architecture-specific data available — fall back to the
-    # generic range and warn loudly, once per model per process, instead
-    # of silently substituting a narrower hardcoded [1, 50].
-    if model_name not in _WARNED_MODELS:
-        print(
-            f"\n  [WARNING] No H2 sweep data found for model '{model_name}' in "
-            f"{H2_SUMMARY_PATH}.\n"
-            f"            Falling back to the generic range "
-            f"{GENERIC_FALLBACK_RANGE} — this prediction is NOT "
-            f"architecture-calibrated.\n"
-            f"            Run h2_experiment.py at least once for this "
-            f"architecture to get a real range.\n"
-        )
-        _WARNED_MODELS.add(model_name)
-
     return GENERIC_FALLBACK_RANGE
 
 
@@ -514,22 +305,15 @@ def demand_to_r_star(quality_demand: float, model_name: str = None,
     """
     Map quality demand score to the nearest tested ratio.
 
-    If model_name is provided and has data in h2_per_arch_summary.csv,
-    uses that architecture-specific range (widened if necessary — FIX 3).
-    Otherwise uses the generic [1, 100] range with a one-time warning
-    (FIX 1).
-
-    arch_ratio_range : optional override, skipping the on-disk lookup.
-        Used by ratio_predictor_verifier.py to inject a leave-one-out
-        range (recomputed excluding the cell under test) instead of the
-        cached range from h2_per_arch_summary.csv, which would otherwise
-        leak that cell's own contribution back into its own prediction.
+    arch_ratio_range : optional {model: (r_min, r_max)} dict. If the
+        model isn't present (or no dict is given), falls back to
+        GENERIC_FALLBACK_RANGE. Used by ratio_predictor_verifier.py to
+        inject a leave-one-out range recomputed excluding the cell
+        under test.
 
     Returns integer percentage from RATIO_GRID.
     """
-    if arch_ratio_range is None:
-        arch_ratio_range = load_arch_ratio_range()
-    r_min, r_max = _resolve_range(model_name, arch_ratio_range)
+    r_min, r_max = _resolve_range(model_name, arch_ratio_range or {})
 
     # Map demand [0, 1] → [r_min, r_max]
     r_continuous = r_min + quality_demand * (r_max - r_min)
@@ -574,8 +358,7 @@ def predict_r_star(
     channel_aware : if True, use the per-channel divergence/structure
                     variants (recommended for multivariate datasets with
                     more than a couple of channels, e.g. 'weather')
-    arch_ratio_range_override : optional {model: (r_min, r_max)} dict,
-                    bypassing the on-disk h2_per_arch_summary.csv lookup.
+    arch_ratio_range_override : optional {model: (r_min, r_max)} dict.
                     See demand_to_r_star() — used for leave-one-out backtesting.
 
     Returns
@@ -600,8 +383,7 @@ def predict_r_star(
                                arch_ratio_range=arch_ratio_range_override)
 
     if verbose:
-        arch_ratio_range = arch_ratio_range_override or load_arch_ratio_range()
-        r_min, r_max = _resolve_range(model_name, arch_ratio_range)
+        r_min, r_max = _resolve_range(model_name, arch_ratio_range_override or {})
         print(f"\n  r* Prediction for {model_name}")
         print(f"  {'─'*40}")
         print(f"  error_ratio score : {s_error:.4f}  (weight {weights[0]})")
@@ -619,221 +401,3 @@ def predict_r_star(
     return r_star
 
 
-# ─────────────────────────────────────────────────────────────────
-# DEMO — mark predicted r* on existing sweep curves
-# ─────────────────────────────────────────────────────────────────
-
-def main() -> None:
-    import matplotlib.pyplot as plt
-
-    # ── FIX 7: paths anchored to this file, not the current working
-    # directory. Inputs are read from results/ (where h2_experiment.py
-    # writes h2_best_ratios.csv and the predictor_inputs/*.npz files).
-    # Annotated outputs are written to a SEPARATE folder, ratio_predictor_
-    # results/, instead of overwriting the original sweep's curve PNGs.
-    INPUT_DIR  = _EXPERIMENTS_DIR / 'results'
-    OUTPUT_DIR = _EXPERIMENTS_DIR / 'ratio_predictor_results'
-
-    csv_path   = INPUT_DIR / 'h2_results' / 'h2_best_ratios.csv'
-    sweep_path = INPUT_DIR / 'h2_results' / 'h2_full_sweep.csv'
-
-    try:
-        df = pd.read_csv(csv_path)
-    except FileNotFoundError:
-        print(f"ERROR: CSV not found at {csv_path}")
-        print("Run h2_experiment.py first.")
-        raise SystemExit(1)
-
-    try:
-        sweep_df = pd.read_csv(sweep_path)
-    except FileNotFoundError:
-        print(f"ERROR: CSV not found at {sweep_path}")
-        print("Run h2_experiment.py first.")
-        raise SystemExit(1)
-
-    # Per-ratio MSE columns live in h2_full_sweep.csv as 'ratio_XXX_pct',
-    # not in h2_best_ratios.csv — merge them in on (dataset, model).
-    df = df.merge(sweep_df, on=['dataset', 'model'], how='left')
-
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    np.random.seed(42)
-
-    print("=" * 65)
-    print("predict_r_star — marking predicted r* on existing curves")
-    print(f"  reading inputs from : {INPUT_DIR}")
-    print(f"  writing outputs to  : {OUTPUT_DIR}")
-    print("=" * 65)
-
-    summary_rows = []
-
-    for _, row in df.iterrows():
-        dataset   = row['dataset']
-        model     = row['model']
-        synth_mse = float(row['synth_mse'])
-        real_mse  = float(row['real_mse'])
-
-        # ── Load real arrays — REQUIRED, no silent fallback (FIX 5) ───────
-        inputs_path = INPUT_DIR / 'predictor_inputs' / f'{dataset}_{model}_inputs.npz'
-        if not inputs_path.exists():
-            print(f"\n  {'!'*65}")
-            print(f"  [SKIPPED] {dataset} x {model}")
-            print(f"  Missing input file: {inputs_path}")
-            print(f"  Refusing to substitute random noise for real data — "
-                  f"that would produce a meaningless prediction with no "
-                  f"indication it wasn't real.")
-            print(f"  Save real_train / synthetic arrays to this path to "
-                  f"include this cell.")
-            print(f"  {'!'*65}")
-            continue
-
-        data       = np.load(inputs_path, allow_pickle=True)
-        real_train = data['real_train']
-        synthetic  = data['synthetic']
-
-        # ── Run predictor ─────────────────────────────────────────────────
-        predicted = predict_r_star(
-            synth_mse  = synth_mse,
-            real_mse   = real_mse,
-            model_name = model,
-            real_train = real_train,
-            synthetic  = synthetic,
-            verbose    = False,
-        )
-
-        # ── Locate the existing (source) mixing curve PNG ─────────────────
-        # Only used as a gate — confirms a curve was actually produced for
-        # this cell. The plot itself is redrawn fresh from the CSV's ratio
-        # columns below, then saved as a NEW file in OUTPUT_DIR (FIX 7),
-        # leaving the original untouched.
-        source_curve_path = INPUT_DIR / 'h2_strategy_selection' / 'S1_Random' / f"{dataset}_{model}_mixing_curve.png"
-        if not source_curve_path.exists():
-            print(f"  SKIP {dataset} × {model} — no mixing curve found at {source_curve_path}")
-            continue
-
-        out_curve_path = OUTPUT_DIR / f"{dataset}_{model}_mixing_curve_predicted.png"
-
-        # ── Extract the ratio MSE columns from CSV to find x/y position ───
-        ratio_cols = sorted(
-            [c for c in row.index
-             if c.startswith('ratio_') and c.endswith('_pct')],
-            key=lambda c: int(c.replace('ratio_', '').replace('_pct', ''))
-        )
-        ratios = [int(c.replace('ratio_', '').replace('_pct', ''))
-                  for c in ratio_cols]
-        mses   = [float(row[c]) for c in ratio_cols
-                  if not pd.isna(row.get(c))]
-        ratios  = ratios[:len(mses)]
-
-        if not ratios:
-            print(f"  SKIP {dataset} × {model} — no ratio data in CSV")
-            continue
-
-        # ── Find MSE at predicted ratio if it was tested ──────────────────
-        pred_col      = f'ratio_{predicted:03d}_pct'
-        pred_in_sweep = pred_col in row.index and not pd.isna(row.get(pred_col))
-        pred_mse_val  = float(row[pred_col]) if pred_in_sweep else None
-
-        # Predicted r* usually falls between tested sweep points (which
-        # only cover 0/1/2/5/10/15/20/30/50/100%), so interpolate along
-        # the mixing curve to report an MSE estimate even when untested.
-        pred_mse_interp = float(np.interp(predicted, ratios, mses))
-
-        # ── Redraw the curve fresh with the predicted r* marker added ─────
-        fig, ax = plt.subplots(figsize=(11, 5))
-
-        ax.plot(ratios, mses, 'o-',
-                color='steelblue', linewidth=2, markersize=5,
-                label='Hybrid MSE', zorder=3)
-
-        ax.axhline(synth_mse, color='#CC0000', linestyle='--', linewidth=1.3,
-                   label=f'Pure synthetic (0%): {synth_mse:.4f}')
-        ax.axhline(real_mse, color='#217346', linestyle='--', linewidth=1.3,
-                   label=f'Pure real (100%): {real_mse:.4f}')
-
-        # FIX 6: correct column name for the actual best ratio
-        best_ratio_str = str(row.get('best_ratio_key', ''))
-        if best_ratio_str and best_ratio_str != 'nan':
-            try:
-                best_r   = int(best_ratio_str.replace('hybrid_', ''))
-                best_col = f'ratio_{best_r:03d}_pct'
-                if best_col in row.index and not pd.isna(row.get(best_col)):
-                    best_mse_val = float(row[best_col])
-                    ax.scatter([best_r], [best_mse_val],
-                               color='#217346', s=200, zorder=6, marker='*',
-                               label=f'Actual best r*={best_r}%  '
-                                     f'MSE={best_mse_val:.4f}')
-            except (ValueError, KeyError):
-                pass
-
-        ax.axvline(predicted, color='#FF8C00', linestyle=':',
-                   linewidth=2, zorder=4,
-                   label=f'Predicted r*={predicted}%')
-
-        if pred_in_sweep and pred_mse_val is not None:
-            ax.scatter([predicted], [pred_mse_val],
-                       color='#FF8C00', s=220, zorder=7, marker='o',
-                       label=f'Predicted MSE={pred_mse_val:.4f}')
-            ax.annotate(
-                f'  r*={predicted}%\n  MSE={pred_mse_val:.4f}',
-                xy=(predicted, pred_mse_val),
-                xytext=(predicted + max(1, max(ratios) * 0.03),
-                        pred_mse_val + 0.008 * abs(pred_mse_val)),
-                fontsize=8.5, color='#FF8C00', fontweight='bold',
-                arrowprops=dict(arrowstyle='->', color='#FF8C00', lw=1.2)
-            )
-        else:
-            ax.scatter([predicted], [pred_mse_interp],
-                       color='#FF8C00', s=220, zorder=7, marker='o',
-                       label=f'Predicted MSE (interp)={pred_mse_interp:.4f}')
-            ax.annotate(
-                f'  r*={predicted}%\n  MSE={pred_mse_interp:.4f} (interp)',
-                xy=(predicted, pred_mse_interp),
-                xytext=(predicted + max(1, max(ratios) * 0.03),
-                        pred_mse_interp + 0.008 * abs(pred_mse_interp)),
-                fontsize=8.5, color='#FF8C00', fontweight='bold',
-                arrowprops=dict(arrowstyle='->', color='#FF8C00', lw=1.2)
-            )
-
-        ax.set_xlabel("Real Data Percentage (%)", fontsize=11)
-        ax.set_ylabel("Test MSE", fontsize=11)
-        ax.set_title(
-            f"{dataset} × {model} — Mixing Curve  "
-            f"[Predicted r*={predicted}%]",
-            fontsize=12, fontweight='bold'
-        )
-        ax.legend(fontsize=8.5, loc='upper right')
-        ax.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(out_curve_path, dpi=130, bbox_inches='tight')
-        plt.close()
-
-        actual = str(row.get('best_ratio_key', 'unknown'))
-        match  = "✓" if str(predicted) == actual.replace('hybrid_', '') else "—"
-        mse_note = "(tested)" if pred_in_sweep else "(interp)"
-        print(f"  {dataset:<18} {model:<10}  "
-              f"predicted={predicted:>3}%  MSE={pred_mse_interp:.6f} {mse_note}  "
-              f"actual={actual:>12}  {match}  "
-              f"→ {out_curve_path.name}")
-
-        summary_rows.append({
-            'dataset':                dataset,
-            'model':                  model,
-            'synthetic_only_mse':     synth_mse,
-            'real_only_mse':          real_mse,
-            'predicted_ratio_pct':    predicted,
-            'compression_pct':       100 - predicted,
-            'predicted_ratio_mse':    round(pred_mse_interp, 6),
-            'predicted_ratio_mse_source': 'tested' if pred_in_sweep else 'interpolated',
-        })
-
-    summary_csv_path = OUTPUT_DIR / 'predicted_ratio_summary.csv'
-    pd.DataFrame(summary_rows).to_csv(summary_csv_path, index=False)
-
-    print(f"\nAll curves saved to {OUTPUT_DIR}/ with predicted r* markers.")
-    print(f"Summary CSV saved to {summary_csv_path}")
-    print("=" * 65)
-
-
-if __name__ == '__main__':
-    main()

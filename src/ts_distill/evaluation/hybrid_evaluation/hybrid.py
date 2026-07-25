@@ -1,14 +1,22 @@
+"""
+Hybrid data-mixing evaluation: trains models on real/synthetic data mixtures
+at different real-data ratios (BaseHybridEvaluator) and compares anchor
+selection strategies for picking which real windows go into that mixture
+(RandomAnchorSelector, StartExtendSelector, UniformStrideSelector,
+ImportanceWeightedSelector, DiversityAnchorSelector).
+"""
+
 import numpy as np
 import torch
 from torch.utils.data import TensorDataset, DataLoader
 import matplotlib.pyplot as plt
- 
+
 from ts_distill.data_pipeline.splitter import make_windows
 from ts_distill.evaluation.base import BaseEvaluator
 from ts_distill.evaluation.sample_selector.base import BaseAnchorSelector
 from ts_distill.evaluation.evaluation import Evaluator
- 
- 
+
+
 class BaseHybridEvaluator(BaseEvaluator):
     """
     Evaluates model performance when training on a mixture of:
@@ -275,10 +283,11 @@ class BaseHybridEvaluator(BaseEvaluator):
         mixing_ratios=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6),
         expert_losses=None,
         real_val_data=None,
+        seeds=None,
     ):
         """
         Runs experiments for different real/synthetic mixing ratios.
- 
+
         Parameters
         ----------
         real_val_data : optional real (continuous, unwindowed) validation
@@ -286,17 +295,26 @@ class BaseHybridEvaluator(BaseEvaluator):
             it is windowed the same way as real_train_data and used for
             early stopping in each ratio's training run. When omitted,
             training falls back to a fixed 5 epochs (original behaviour).
- 
+        seeds : optional list/tuple of ints. When provided, each ratio is
+            repeated once per seed — `torch.manual_seed(seed)` is set before
+            re-drawing the hybrid mixture (real-window selection + shuffle
+            order) and before re-initializing + training the model — so
+            every seed gets an independent run. The per-ratio result then
+            reports the mean/std MSE across seeds plus the raw per-seed
+            values. When omitted (default), behaviour is unchanged: one run
+            per ratio using whatever the ambient RNG state is.
+
         Returns:
             {
-                'hybrid_10': {...},
-                'hybrid_20': {...},
+                'hybrid_10': {'MSE': ..., 'RMSE': ...},               # seeds=None
+                'hybrid_20': {'MSE': mean, 'MSE_std': std,
+                              'seed_mse': {7: ..., 42: ..., 123: ...}}, # seeds given
                 ...
             }
         """
- 
+
         results = {}
- 
+
         # Build the (windowed) validation loader once, shared across all
         # ratios in the sweep — mirrors how real_test_loader is shared.
         val_loader = None
@@ -310,36 +328,55 @@ class BaseHybridEvaluator(BaseEvaluator):
                 batch_size=self.batch_size,
                 shuffle=False,
             )
- 
+
+        seed_list = list(seeds) if seeds else [None]
+
         for ratio in mixing_ratios:
-            # Build hybrid dataset for current ratio
-            hybrid_dataset = self.hybridmixture(
-                synthetic_data=synthetic_data,
-                real_train_data=real_train_data,
-                real_ratio=ratio,
-                window_size=window_size,
-                expert_losses=expert_losses,
-            )
- 
-            # Training loader — FIX 2: uses self.batch_size instead of a
-            # hardcoded 64.
-            train_loader = DataLoader(
-                hybrid_dataset,
-                batch_size=self.batch_size,
-                shuffle=True
-            )
- 
-            # Train + evaluate
-            score = self._train_and_test(
-                train_loader,
-                real_test_loader,
-                model_fn,
-                val_loader=val_loader,
-            )
- 
-            # Save results
-            results[f"hybrid_{int(ratio * 100)}"] = score
- 
+            seed_mse = {}
+            last_score = None
+
+            for seed in seed_list:
+                if seed is not None:
+                    torch.manual_seed(seed)
+
+                # Build hybrid dataset for current ratio (re-drawn per seed
+                # so real-window selection and shuffle order vary too).
+                hybrid_dataset = self.hybridmixture(
+                    synthetic_data=synthetic_data,
+                    real_train_data=real_train_data,
+                    real_ratio=ratio,
+                    window_size=window_size,
+                    expert_losses=expert_losses,
+                )
+
+                # Training loader — FIX 2: uses self.batch_size instead of a
+                # hardcoded 64.
+                train_loader = DataLoader(
+                    hybrid_dataset,
+                    batch_size=self.batch_size,
+                    shuffle=True
+                )
+
+                # Train + evaluate
+                score = self._train_and_test(
+                    train_loader,
+                    real_test_loader,
+                    model_fn,
+                    val_loader=val_loader,
+                )
+                last_score = score
+                seed_mse[seed if seed is not None else 0] = score['MSE']
+
+            if seeds:
+                mse_values = list(seed_mse.values())
+                results[f"hybrid_{int(ratio * 100)}"] = {
+                    'MSE':      float(np.mean(mse_values)),
+                    'MSE_std':  float(np.std(mse_values)),
+                    'seed_mse': seed_mse,
+                }
+            else:
+                results[f"hybrid_{int(ratio * 100)}"] = last_score
+
         return results
  
     def analyse_h2_cell(
