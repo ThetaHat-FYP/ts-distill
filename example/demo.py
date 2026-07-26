@@ -47,6 +47,11 @@ from ts_distill.trainer.callback.simple_callback import SimpleCallback
 from ts_distill.trajectory.recorder.simple_recorder import SimpleRecorder
 from ts_distill.trajectory.matcher.mse_matcher import MSEMatcher
 from ts_distill.distillation_core.distillation_algorithm.mtt import MTTDistiller
+from ts_distill.distillation_core.distillation_algorithm.phase_aware_mtt import PhaseAwareMTTDistiller
+
+# Phase-aware matching: val-loss curve recorder + plateau detector for T+.
+from ts_distill.trainer.callback.val_loss_callback import ValLossRecorderCallback
+from ts_distill.trajectory.phase_detector.valloss_detector import ValLossPlateauDetector
 
 # The three switchable initializers.
 from ts_distill.distillation_core.initializer.random_sample_initializer import RandomSampleInitializer
@@ -71,10 +76,25 @@ from ts_distill.evaluation.hybrid_evaluation.optimal_ratio_finder import find_op
 
 # ── 1. What to run (change between runs to build the results table) ──────────
 DATASET       = 'ETTm2'     # any key in DATASET_CONFIGS
-MODEL         = 'CNN'       # 'MLP' | 'DLinear' | 'CNN' | 'LSTM'
-INITIALIZER   = 'random'    # 'random' | 'geometry' | 'uncertainty'
-POSTFIX_ALPHA = 0.7      # FFT post-fix strength in [0, 1]  (0.0 disables it)
+MODEL         = 'DLinear'       # 'MLP' | 'DLinear' | 'CNN' | 'LSTM'
+INITIALIZER   = 'random'    # 'random' | 'geometric' | 'uncertainty'
+POSTFIX_ALPHA = 0      # FFT post-fix strength in [0, 1]  (0.0 disables it)
 SEED          = 42
+
+# ── 1b. Phase-aware matching (same option as experiment_matrix.py) ───────────
+# False (default): standard MTT — parameter matching throughout. Keeps the
+#   distillation RNG stream identical to experiment_inti.py (exact-match path).
+# True: PhaseAwareMTTDistiller — parameter matching early, prediction matching
+#   late. The phase boundary T+ is detected on the fly from the expert's
+#   validation-loss curve (ValLossPlateauDetector). This adds one val pass per
+#   expert epoch, which consumes torch RNG, so numbers will NOT match the
+#   standard-MTT path — expected, it is a different method.
+USE_PHASE_AWARE_MATCHING = True
+PHASE_BOUNDARY_CONFIG = {
+    'smoothing_window': 5,
+    'patience':         5,
+    'min_delta_frac':   0.01,
+}
 
 # ── 2. Hybrid mixer sweep grid ───────────────────────────────────────────────
 # 0.0 = pure synthetic. The real baseline is measured separately from the
@@ -108,7 +128,6 @@ RESULTS_CSV = Path(__file__).parent / 'results' / 'end_to_end_results.csv'
 # 'geometric' is accepted as an alias for 'geometry' to avoid a common typo.
 INITIALIZERS = {
     'random':      RandomSampleInitializer,
-    'geometry':    GeometrySequenceInitializer,
     'geometric':   GeometrySequenceInitializer,
     'uncertainty': UncertaintySampleInitializer,
 }
@@ -139,6 +158,11 @@ def append_result_csv(csv_path, row: dict, key_cols: list):
 
     if csv_path.exists():
         df_old = pd.read_csv(csv_path)
+        # Back-compat: older CSVs may predate some key columns (e.g. 'matching').
+        # Add any missing ones so the key comparison below never KeyErrors.
+        for k in key_cols:
+            if k not in df_old.columns:
+                df_old[k] = ''
         incoming = tuple(str(row[k]) for k in key_cols)
         keep = df_old[key_cols].astype(str).apply(tuple, axis=1) != incoming
         df_out = pd.concat([df_old[keep], df_new], ignore_index=True)
@@ -191,20 +215,63 @@ def main():
     # torch RNG value. It is measured AFTER distillation instead (same value,
     # since the expert is already trained and unchanged).
     banner(f"STEP 2  Train expert ({cfg['expert_epochs']} ep)")
-    recorder     = SimpleRecorder(record_every=1)
-    expert_model = make_model()
-    Trainer(
+    # Shared val loader — used for the expert val-loss curve (phase-aware boundary
+    # detection) and for eval-time early stopping later. Constructing it draws no
+    # RNG; only iterating does (which, in phase-aware mode, happens per epoch).
+    eval_val_loader = DataLoader(val_windows, batch_size=cfg['eval_batch_size'], shuffle=False)
+
+    recorder       = SimpleRecorder(record_every=1)
+    expert_model   = make_model()
+    expert_trainer = Trainer(
         model     = expert_model,
         optimizer = torch.optim.SGD(expert_model.parameters(),
                                     lr=cfg['expert_lr'], momentum=cfg['expert_momentum']),
         criterion = torch.nn.MSELoss(),
         device    = device,
         seq_len   = seq_len,
-    ).fit(
+    )
+    expert_callbacks = [recorder, SimpleCallback()]
+
+    # Only record the per-epoch val-loss curve when phase-aware matching is on —
+    # it costs one extra val pass per epoch, otherwise unused.
+    #
+    # CRITICAL: iterating the val DataLoader draws torch RNG. Fired at each
+    # epoch end, that would shift the NEXT epoch's MiniBatchLoader randperm →
+    # different expert weights → different real_mse. real_mse must be
+    # config-independent (expert depends only on SEED + data + expert config,
+    # never on whether phase-aware is toggled). So snapshot/restore the RNG
+    # state around the eval, leaving the expert training stream untouched.
+    val_loss_recorder = None
+    if USE_PHASE_AWARE_MATCHING:
+        def _rng_safe_val_eval():
+            rng_state = torch.get_rng_state()
+            try:
+                return expert_trainer.eval_epoch(eval_val_loader)
+            finally:
+                torch.set_rng_state(rng_state)
+        val_loss_recorder = ValLossRecorderCallback(eval_fn=_rng_safe_val_eval)
+        expert_callbacks.append(val_loss_recorder)
+
+    expert_trainer.fit(
         dataloader = MiniBatchLoader(train_windows, batch_size=cfg['batch_size']),
         epochs     = cfg['expert_epochs'],
-        callbacks  = [recorder, SimpleCallback()],
+        callbacks  = expert_callbacks,
     )
+
+    # ── STEP 2b: Detect phase boundary T+ (phase-aware matching only) ─────────
+    phase_boundary = None
+    if USE_PHASE_AWARE_MATCHING:
+        boundary_result = ValLossPlateauDetector(**PHASE_BOUNDARY_CONFIG).detect(
+            val_loss_recorder.val_losses
+        )
+        phase_boundary = boundary_result['boundary_epoch']
+        if phase_boundary is not None:
+            print(f"  [PhaseDetector] T+ = {phase_boundary} "
+                  f"(best_val_loss={boundary_result['best_val_loss']:.6f}, "
+                  f"final_val_loss={boundary_result['final_val_loss']:.6f})")
+        else:
+            print("  [PhaseDetector] No plateau found — phase_aware_mtt runs as "
+                  "parameter matching throughout (same as standard MTT).")
 
     # ── STEP 3: Choose initializer + distil ──────────────────────────────────
     banner(f"STEP 3  Initializer ({INITIALIZER}) + distil ({cfg['n_distill_steps']} steps)")
@@ -212,7 +279,7 @@ def main():
     synthetic_init = initializer.initialize_sequence(raw_train_data, cfg['n_synthetic'])
     print(f"  Synthetic seed shape: {tuple(synthetic_init.shape)}")
 
-    distiller = MTTDistiller(
+    distiller_kwargs = dict(
         initializer            = initializer,
         matcher                = MSEMatcher(),
         model_factory          = make_model,
@@ -226,6 +293,10 @@ def main():
         seq_len                = seq_len,
         pred_len               = pred_len,
     )
+    if USE_PHASE_AWARE_MATCHING:
+        distiller = PhaseAwareMTTDistiller(**distiller_kwargs, phase_boundary=phase_boundary)
+    else:
+        distiller = MTTDistiller(**distiller_kwargs)
     synthetic_distilled = distiller.distill(
         synthetic_init = synthetic_init,
         n_steps        = cfg['n_distill_steps'],
@@ -240,7 +311,6 @@ def main():
     # the number matches it. It does NOT come from the hybrid mixer's hybrid_0.
     # For the match to hold, SEED and the distillation config must equal
     # experiment_inti's (SEED=123, INITIALIZER='random', synthetic_lr=5.0).
-    eval_val_loader = DataLoader(val_windows, batch_size=cfg['eval_batch_size'], shuffle=False)
     syn_windows_raw = torch.tensor(
         make_windows(synthetic_distilled.detach().cpu().numpy(), window_size),
         dtype=torch.float32,
@@ -379,6 +449,8 @@ def main():
             'dataset':            DATASET,
             'model':              MODEL,
             'initializer':        INITIALIZER,
+            'matching':           'phase_aware_mtt' if USE_PHASE_AWARE_MATCHING else 'param_mtt',
+            'phase_boundary':     phase_boundary if phase_boundary is not None else '',
             'postfix_alpha':      POSTFIX_ALPHA,
             'seed':               SEED,
             'expert_epochs':      cfg['expert_epochs'],
@@ -396,7 +468,7 @@ def main():
         for r, m in zip(ratios, mses):
             row[f'mse_r{r}'] = round(m, 6)
 
-        key_cols = ['dataset', 'model', 'initializer', 'postfix_alpha', 'seed']
+        key_cols = ['dataset', 'model', 'initializer', 'matching', 'postfix_alpha', 'seed']
         append_result_csv(RESULTS_CSV, row, key_cols)
         print(f"  [log] result row appended -> {RESULTS_CSV}\n")
 
