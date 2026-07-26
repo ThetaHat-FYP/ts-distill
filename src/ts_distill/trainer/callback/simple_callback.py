@@ -11,6 +11,10 @@ printer at the same time.
 
 from ts_distill.trainer.callback.base import BaseCallback
 
+from ts_distill._logging import get_logger
+
+logger = get_logger(__name__)
+
 
 class SimpleCallback(BaseCallback):
     """
@@ -26,11 +30,11 @@ class SimpleCallback(BaseCallback):
         self.print_every = print_every
 
     def on_train_begin(self, model, **kwargs):
-        print("   Training started...")
+        logger.info("   Training started...")
 
     def on_epoch_end(self, model, epoch: int, loss: float, **kwargs):
         if (epoch + 1) % self.print_every == 0:
-            print(f"   Epoch {epoch + 1:>4} | Loss: {loss:.6f}")
+            logger.info(f"   Epoch {epoch + 1:>4} | Loss: {loss:.6f}")
 
     def on_train_end(self, model, **kwargs):
-        print("   Training complete.")
+        logger.info("   Training complete.")

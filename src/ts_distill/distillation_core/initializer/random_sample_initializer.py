@@ -23,6 +23,10 @@ import torch.fft
 
 from ts_distill.distillation_core.initializer.base import BaseInitializer
 
+from ts_distill._logging import get_logger
+
+logger = get_logger(__name__)
+
 
 class RandomSampleInitializer(BaseInitializer):
     """
@@ -102,7 +106,7 @@ class RandomSampleInitializer(BaseInitializer):
         synthetic_seq = raw_train_data[start_idx : start_idx + n_synthetic].clone()
         synthetic_seq.requires_grad_(True)
 
-        print(f"   Synthetic sequence initialised from random data "
+        logger.info(f"   Synthetic sequence initialised from random data "
               f"(rows {start_idx}–{start_idx + n_synthetic - 1}), "
               f"shape {tuple(synthetic_seq.shape)}")
 

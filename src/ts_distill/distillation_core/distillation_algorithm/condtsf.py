@@ -6,6 +6,10 @@ import torch.nn as nn
 from ts_distill.distillation_core.distillation_algorithm.base import BaseDistiller
 from ts_distill.distillation_core.initializer.base import BaseInitializer
 from ts_distill.trajectory.matcher.base import BaseTrajectoryMatcher
+
+from ts_distill._logging import get_logger
+
+logger = get_logger(__name__)
 class CondTSFDistiller(BaseDistiller):
     """CondTSF distiller for time-series.
 
@@ -77,7 +81,7 @@ class CondTSFDistiller(BaseDistiller):
                 for name, param in base_student.named_parameters()
             }
 
-        print(f"CondTSF distilling {n_synthetic} samples over {n_steps} steps...")
+        logger.info(f"CondTSF distilling {n_synthetic} samples over {n_steps} steps...")
 
         for step in range(n_steps):
             optimizer_img.zero_grad()
@@ -99,7 +103,7 @@ class CondTSFDistiller(BaseDistiller):
                 self._apply_cond_refinement(synthetic_data)
 
             if (step + 1) % 5 == 0 or step == 0:
-                print(f"[Step {step + 1:>3}/{n_steps}] Loss: {unroll_loss.item():.4f}")
+                logger.info(f"[Step {step + 1:>3}/{n_steps}] Loss: {unroll_loss.item():.4f}")
 
         return synthetic_data.detach()
 

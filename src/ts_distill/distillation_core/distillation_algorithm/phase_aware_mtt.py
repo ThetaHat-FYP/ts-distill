@@ -51,6 +51,10 @@ from ts_distill.distillation_core.initializer.base import BaseInitializer
 from ts_distill.trajectory.matcher.base import BaseTrajectoryMatcher
 from ts_distill.trajectory.recorder.base import BaseTrajectoryRecorder
 
+from ts_distill._logging import get_logger
+
+logger = get_logger(__name__)
+
 
 class PhaseAwareMTTDistiller(MTTDistiller):
     """
@@ -147,7 +151,7 @@ class PhaseAwareMTTDistiller(MTTDistiller):
             if self.phase_boundary is not None
             else "no boundary (full param matching)"
         )
-        print(
+        logger.info(
             f"[PhaseAwareMTT] Distilling {n_synthetic} steps over {n_steps} steps "
             f"({boundary_label})..."
         )
@@ -222,7 +226,7 @@ class PhaseAwareMTTDistiller(MTTDistiller):
 
             if (step + 1) % 5 == 0 or step == 0:
                 phase_tag = "LATE/pred" if is_late_phase else "EARLY/param"
-                print(
+                logger.info(
                     f"[Step {step + 1:>3}/{n_steps}] "
                     f"Loss: {grand_loss.item():.4f}  [{phase_tag}]"
                 )
@@ -233,12 +237,12 @@ class PhaseAwareMTTDistiller(MTTDistiller):
                 if val_mse < best_val_mse:
                     best_val_mse   = val_mse
                     best_synthetic = synthetic_data.detach().clone()
-                    print(
+                    logger.info(
                         f"   [Snapshot @ step {step + 1}] "
                         f"New best val MSE: {val_mse:.6f} (saved)"
                     )
                 else:
-                    print(
+                    logger.info(
                         f"   [Snapshot @ step {step + 1}] "
                         f"Val MSE: {val_mse:.6f} (best: {best_val_mse:.6f})"
                     )
@@ -251,11 +255,11 @@ class PhaseAwareMTTDistiller(MTTDistiller):
                 )
                 best_val_mse   = val_mse
                 best_synthetic = synthetic_data.detach().clone()
-                print(
+                logger.info(
                     f"   [Snapshot @ step {n_steps}] "
                     f"Val MSE: {val_mse:.6f} (end-of-run)"
                 )
-            print(f"   Best snapshot val MSE: {best_val_mse:.6f}")
+            logger.info(f"   Best snapshot val MSE: {best_val_mse:.6f}")
             return best_synthetic
 
         return synthetic_data.detach()

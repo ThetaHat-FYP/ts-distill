@@ -36,9 +36,10 @@ class BaseInitializer(ABC):
         """
         Create a continuous-sequence synthetic initialisation for MTT-style distillation.
 
-        Subclasses that support this strategy (e.g. RealSampleInitializer) must
-        override this method.  The base implementation raises NotImplementedError
-        so that using an incompatible initializer with MTT fails loudly.
+        Subclasses that support this strategy (RandomSampleInitializer,
+        GeometrySequenceInitializer, UncertaintySampleInitializer) override this
+        method.  The base implementation raises NotImplementedError so that using
+        an incompatible initializer with MTT fails loudly.
 
         Args:
             raw_train_data (Tensor): Un-windowed training data, shape (T, C).
@@ -49,7 +50,8 @@ class BaseInitializer(ABC):
         """
         raise NotImplementedError(
             f"{self.__class__.__name__} does not support initialize_sequence(). "
-            "Use RealSampleInitializer or implement this method in your subclass."
+            "Use RandomSampleInitializer, GeometrySequenceInitializer, or "
+            "UncertaintySampleInitializer, or implement this method in your subclass."
         )
 
     def refine(

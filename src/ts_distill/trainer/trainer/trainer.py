@@ -3,6 +3,10 @@ import torch
 
 from ts_distill.trainer.trainer.base import BaseTrainer
 
+from ts_distill._logging import get_logger
+
+logger = get_logger(__name__)
+
 
 class Trainer(BaseTrainer):
     """
@@ -88,7 +92,7 @@ class Trainer(BaseTrainer):
                 else:
                     no_improve += 1
                     if no_improve >= patience:
-                        print(f"   Early stopping at epoch {epoch + 1} — val MSE: {val_mse:.6f} (patience={patience})")
+                        logger.info(f"   Early stopping at epoch {epoch + 1} - val MSE: {val_mse:.6f} (patience={patience})")
                         break
 
         if best_weights is not None:

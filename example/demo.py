@@ -34,8 +34,13 @@ from torch.utils.data import DataLoader, TensorDataset
 sys.path.append(str(Path(__file__).parent.parent))
 
 # ── Everything below is imported from the built library ──────────────────────
+# ts_distill logs its progress instead of printing it, so importing the library
+# is silent by default. Scripts opt in to that output with one call.
+from ts_distill import configure_logging
+configure_logging('INFO')
+
 from ts_distill.config import (
-    DEFAULT_CONFIG, DATASET_CONFIGS, MODEL_CONFIGS, phase_boundary_config,
+    DEFAULT_CONFIG, DATASET_CONFIGS, MODEL_CONFIGS, resolve_csv_path, phase_boundary_config,
 )
 
 from ts_distill.data_pipeline.data_loader.csv_loader import CSVDataLoader
@@ -69,12 +74,20 @@ from ts_distill.evaluation.evaluation import Evaluator
 # Hybrid mixer + best-ratio prediction.
 from ts_distill.evaluation.hybrid_evaluation.hybrid import BaseHybridEvaluator, RandomAnchorSelector
 from ts_distill.evaluation.hybrid_evaluation.optimal_ratio_finder import find_optimal_ratio
+# Sweep-free r* predictor — the cheap alternative to the ratio sweep.
+from ts_distill.evaluation.hybrid_evaluation.ratio_predictor import predict_r_star
 
 
 # =============================================================================
 # CONFIGURATION — edit these, then run.  Each run appends one row to the CSV,
 # so you can sweep datasets / models / methods and collect results over time.
 # =============================================================================
+
+# ── 0. Where the benchmark CSVs live ─────────────────────────────────────────
+# The library stores only each dataset's FILE NAME, never a path — once
+# installed it cannot know where your data sits — so the directory is declared
+# here and joined via resolve_csv_path(). Point it anywhere you keep the CSVs.
+DATA_DIR      = Path(__file__).resolve().parent      # this example/ folder
 
 # ── 1. What to run (change between runs to build the results table) ──────────
 DATASET       = 'ETTh2'     # any key in DATASET_CONFIGS
@@ -195,10 +208,16 @@ def main():
 
     # ── STEP 1: Load the CSV with the library's CSV loader ───────────────────
     banner(f"STEP 1  Load dataset  ({DATASET})")
+    csv_path = resolve_csv_path(DATASET, DATA_DIR)
+    if not csv_path.exists():
+        raise FileNotFoundError(
+            f"{csv_path} not found. Put the {DATASET} benchmark CSV there, "
+            f"or point DATA_DIR at the folder that holds it."
+        )
     loader = CSVDataLoader()
-    df = loader.load_data(dataset_cfg['csv_path'])
+    df = loader.load_data(str(csv_path))
     values = df.iloc[:, 1:].values.astype(np.float32)   # drop the date column
-    print(f"  Loaded {values.shape[0]} rows x {values.shape[1]} channels from {dataset_cfg['csv_path']}")
+    print(f"  Loaded {values.shape[0]} rows x {values.shape[1]} channels from {csv_path}")
 
     train_start, train_end, val_start, val_end, test_start, test_end = get_data_splits(
         values=values, window_size=window_size, seq_len=seq_len, dataset_cfg=dataset_cfg
@@ -284,7 +303,7 @@ def main():
             print(f"  [PhaseDetector] best_val_loss={boundary_result['best_val_loss']:.6f}, "
                   f"final_val_loss={boundary_result['final_val_loss']:.6f}")
         else:
-            print("  [PhaseDetector] No plateau found — phase_aware_mtt runs as "
+            print("  [PhaseDetector] No plateau found - phase_aware_mtt runs as "
                   "parameter matching throughout (same as standard MTT).")
 
     # ── STEP 3: Choose initializer + distil ──────────────────────────────────
@@ -374,8 +393,33 @@ def main():
         synthetic_final = synthetic_distilled.detach()
         print("  Post-fix disabled (alpha=0). Using raw distilled data.")
 
-    # ── STEP 5: Hybrid mixer — predict the best real/synthetic ratio ─────────
-    banner("STEP 5  Hybrid mixer  ->  predict best mix ratio")
+    # ── STEP 5: PREDICT r* from four cheap measures — no sweep ───────────────
+    # This is the library's actual method for choosing the mixing ratio: score
+    # how badly distillation degraded utility, how far the synthetic
+    # distribution drifted, how much temporal structure was lost, and how
+    # sensitive this architecture is — then map the weighted sum to r*.
+    # Every input was already computed above, so this costs no extra training.
+    #
+    # STEP 6 then runs the expensive measured sweep anyway, because this script
+    # exists to COLLECT data: logging predicted and measured r* side by side is
+    # what lets you show the predictor agrees with the oracle.
+    banner("STEP 5  Predict r*  (four measures, no sweep)")
+    predicted_r_star = predict_r_star(
+        synth_mse  = synthetic_only_mse,
+        real_mse   = real_mse,
+        model_name = MODEL,
+        real_train = raw_train_data.cpu().numpy(),
+        synthetic  = synthetic_final.detach().cpu().numpy(),
+        # Per-channel scoring matters once a dataset has many channels
+        # (weather has 21); for the 7-channel ETT family the global variant
+        # is equivalent and cheaper.
+        channel_aware = in_features > 8,
+        verbose       = True,
+    )
+    print(f"\n  -> predicted r* = {predicted_r_star}% real (no probes trained)")
+
+    # ── STEP 6: Measured sweep — the oracle the prediction is checked against ─
+    banner("STEP 6  Measured ratio sweep  (oracle, one probe per ratio)")
     hybrid = BaseHybridEvaluator(
         anchor_selector     = RandomAnchorSelector(),
         seq_len             = seq_len,
@@ -427,11 +471,15 @@ def main():
     f_mses   = [m for _, m in finite]
     best = find_optimal_ratio(f_ratios, f_mses)      # balances accuracy + compression
     best_ratio_pct = int(best['nearest_tested_ratio'])
-    print(f"\n  Predicted best ratio r* = {best['r_star']:.1f}%  "
+    print(f"\n  Measured  r* = {best['r_star']:.1f}%  "
           f"(nearest tested = {best_ratio_pct}% real)")
+    print(f"  Predicted r* = {predicted_r_star}%   "
+          f"gap = {abs(predicted_r_star - best['r_star']):.1f} pp")
 
-    # ── STEP 6: Mix at the best ratio -> final dataset + accuracy ─────────────
-    banner(f"STEP 6  Final dataset  (mix at {best_ratio_pct}% real)")
+    # ── STEP 7: Mix at the measured ratio -> final dataset + accuracy ─────────
+    # The measured ratio is used here because this script logs oracle results;
+    # a library user with no sweep would mix at predicted_r_star instead.
+    banner(f"STEP 7  Final dataset  (mix at {best_ratio_pct}% real)")
     final_dataset = hybrid.hybridmixture(
         synthetic_data  = synthetic_final,
         real_train_data = raw_train_data,
@@ -452,7 +500,9 @@ def main():
     print(f"  Post-fix alpha                : {POSTFIX_ALPHA}")
     print(f"  Real baseline   MSE (expert)  : {real_mse:.6f}   <- fixed lower bound")
     print(f"  Synthetic-only  MSE (inti eval): {synthetic_only_mse:.6f}   <- matches experiment_inti")
-    print(f"  Best mix ratio                : {best_ratio_pct}% real")
+    print(f"  PREDICTED r* (no sweep)       : {predicted_r_star}% real")
+    print(f"  Measured  r* (oracle sweep)   : {best['r_star']:.1f}% -> {best_ratio_pct}% real")
+    print(f"  Prediction gap                : {abs(predicted_r_star - best['r_star']):.1f} pp")
     print(f"  FINAL hybrid    MSE           : {final_mse:.6f}")
     print(f"  Final synthetic+real dataset  : {len(final_dataset)} windows ready for use")
     print()
@@ -479,6 +529,10 @@ def main():
             'synthetic_only_mse': round(synthetic_only_mse, 6),
             'best_ratio_pct':     best_ratio_pct,
             'r_star':             round(float(best['r_star']), 2),
+            # Sweep-free prediction, logged next to the oracle so the two can be
+            # compared across every config this script is run on.
+            'predicted_r_star':   predicted_r_star,
+            'r_star_gap_pp':      round(abs(predicted_r_star - float(best['r_star'])), 2),
             'compression_pct':    round(float(best['compression_pct']), 2),
             'final_hybrid_mse':   round(final_mse, 6),
             'fft_before':         round(fft_before, 6) if fft_before is not None else None,

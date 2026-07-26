@@ -56,6 +56,12 @@ from torch.utils.data import DataLoader as TorchDataLoader
 # root that contains src/.  This mirrors the approach used in run_cycle.py.
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
+# ── Framework — progress output ───────────────────────────────────────────────
+# ts_distill logs its progress instead of printing it, so importing the library
+# is silent by default. Scripts opt in to that output with one call.
+from ts_distill import configure_logging
+configure_logging('INFO')
+
 # ── Framework — data utilities ────────────────────────────────────────────────
 from ts_distill.data_pipeline.splitter import get_data_splits, make_windows
 from ts_distill.data_pipeline.data_loader.mini_batch_loader import MiniBatchLoader
@@ -905,8 +911,8 @@ def run_postfix_experiment(
                            main_rows, key_cols, POSTFIX_MAIN_COLUMNS)
     n_feat = _append_dedup(results_dir / 'postfix_sweep_feature.csv',
                            feature_rows_all, key_cols, POSTFIX_FEATURE_COLUMNS)
-    print(f"\nAppended {n_main} rows → {results_dir / 'postfix_sweep.csv'}")
-    print(f"Appended {n_feat} rows → {results_dir / 'postfix_sweep_feature.csv'}")
+    print(f"\nAppended {n_main} rows -> {results_dir / 'postfix_sweep.csv'}")
+    print(f"Appended {n_feat} rows -> {results_dir / 'postfix_sweep_feature.csv'}")
 
 
 # =============================================================================
@@ -940,7 +946,7 @@ def run_budget_sensitivity(
 
     for i, n_steps in enumerate(step_counts, 1):
         print(f"\n{'=' * 70}")
-        print(f"[{i}/{total}]  {dataset_name}  x  {model_name}  x  {initializer_name}  —  n_steps={n_steps}")
+        print(f"[{i}/{total}]  {dataset_name}  x  {model_name}  x  {initializer_name}  -  n_steps={n_steps}")
         print(f"{'=' * 70}")
         try:
             synthetic_sequence = checkpoints[n_steps]
@@ -1093,7 +1099,7 @@ def main() -> None:
             done += 1
 
             if (dataset_name, model_name) in completed:
-                print(f"[{done}/{total}]  {dataset_name} x {model_name}  — already done, skipping")
+                print(f"[{done}/{total}]  {dataset_name} x {model_name}  - already done, skipping")
                 continue
 
             print(f"\n{'=' * 70}")

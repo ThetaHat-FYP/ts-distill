@@ -1,6 +1,10 @@
 import torch
 from ts_distill.distillation_core.initializer.base import BaseInitializer
 
+from ts_distill._logging import get_logger
+
+logger = get_logger(__name__)
+
 class GeometrySequenceInitializer(BaseInitializer):
     def initialize(self, shape: tuple, real_data_reference: torch.Tensor = None) -> torch.Tensor:
         raise NotImplementedError("GeometrySequenceInitializer only supports continuous sequence initialization.")
@@ -57,7 +61,7 @@ class GeometrySequenceInitializer(BaseInitializer):
         synthetic_seq = raw_train_data[best_idx : best_idx + n_synthetic].clone()
         synthetic_seq.requires_grad_(True)
 
-        print(f"  Geometry sequence initialised from random data (Most representative) "
+        logger.info(f"  Geometry sequence initialised from random data (Most representative) "
               f"(rows {best_idx}–{best_idx + n_synthetic - 1}), "
               f"shape {tuple(synthetic_seq.shape)}")
 

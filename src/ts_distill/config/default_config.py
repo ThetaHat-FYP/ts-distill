@@ -9,14 +9,31 @@ so that library users get the same, tested defaults without copying them.
 Contents
 --------
 DEFAULT_CONFIG   : distillation + evaluation hyperparameters (one flat dict).
-DATASET_CONFIGS  : per-dataset CSV path and train/val/test split definition.
+DATASET_CONFIGS  : per-dataset benchmark split definition + CSV file NAME.
 DATASET_PERIODS  : dominant seasonal period per dataset (for ACF / STL / metrics).
 MODEL_CONFIGS    : per-model constructor kwargs.
+resolve_csv_path : join a data directory with a dataset's CSV file name.
 
-CSV paths are relative to the project root, so run scripts from the project
-root (the folder that contains `example/` and `src/`), exactly like the
-experiment scripts.
+Where the data lives
+--------------------
+This module deliberately stores only each dataset's FILE NAME, never a full
+path. The library is installed into site-packages, where a path like
+`example/ETTh1.csv` means nothing — the caller is the only one who knows where
+the benchmark CSVs actually sit on their machine.
+
+So the data directory is a caller-side setting. Every runnable script declares
+it once at the top and resolves paths from it:
+
+    from ts_distill.config import resolve_csv_path
+
+    DATA_DIR = 'example'                          # or '/data/ett', 'C:/datasets'
+    path     = resolve_csv_path('ETTh1', DATA_DIR)   # -> example/ETTh1.csv
+
+Download the ETT / weather / exchange-rate benchmark CSVs yourself and point
+DATA_DIR at whatever folder you put them in.
 """
+
+from pathlib import Path
 
 # =============================================================================
 # DISTILLATION + EVALUATION HYPERPARAMETERS
@@ -53,42 +70,42 @@ DEFAULT_CONFIG = {
 
 DATASET_CONFIGS = {
     'ETTh1': {
-        'csv_path':    'example/ETTh1.csv',
+        'csv_name':    'ETTh1.csv',
         'split_mode':  'benchmark_borders',
         'border1s':    [0, 12 * 30 * 24 - 96,       12 * 30 * 24 + 4 * 30 * 24 - 96],
         'border2s':    [12 * 30 * 24, 12 * 30 * 24 + 4 * 30 * 24, 12 * 30 * 24 + 8 * 30 * 24],
         'in_features': 7,
     },
     'ETTh2': {
-        'csv_path':    'example/ETTh2.csv',
+        'csv_name':    'ETTh2.csv',
         'split_mode':  'benchmark_borders',
         'border1s':    [0, 12 * 30 * 24 - 96,       12 * 30 * 24 + 4 * 30 * 24 - 96],
         'border2s':    [12 * 30 * 24, 12 * 30 * 24 + 4 * 30 * 24, 12 * 30 * 24 + 8 * 30 * 24],
         'in_features': 7,
     },
     'ETTm1': {
-        'csv_path':    'example/ETTm1.csv',
+        'csv_name':    'ETTm1.csv',
         'split_mode':  'benchmark_borders',
         'border1s':    [0, 12 * 30 * 96 - 96,       12 * 30 * 96 + 4 * 30 * 96 - 96],
         'border2s':    [12 * 30 * 96, 12 * 30 * 96 + 4 * 30 * 96, 12 * 30 * 96 + 8 * 30 * 96],
         'in_features': 7,
     },
     'ETTm2': {
-        'csv_path':    'example/ETTm2.csv',
+        'csv_name':    'ETTm2.csv',
         'split_mode':  'benchmark_borders',
         'border1s':    [0, 12 * 30 * 96 - 96,       12 * 30 * 96 + 4 * 30 * 96 - 96],
         'border2s':    [12 * 30 * 96, 12 * 30 * 96 + 4 * 30 * 96, 12 * 30 * 96 + 8 * 30 * 96],
         'in_features': 7,
     },
     'exchange_rate': {
-        'csv_path':    'example/exchange_rate.csv',
+        'csv_name':    'exchange_rate.csv',
         'split_mode':  'ratios',
         'train_ratio': 0.7,
         'val_ratio':   0.1,
         'in_features': 8,
     },
     'weather': {
-        'csv_path':    'example/weather.csv',
+        'csv_name':    'weather.csv',
         'split_mode':  'ratios',
         'train_ratio': 0.7,
         'val_ratio':   0.1,
@@ -185,3 +202,34 @@ def phase_boundary_config(arch: str) -> dict:
         dedicated entry get PHASE_BOUNDARY_CONFIG_DEFAULT.
     """
     return dict(PHASE_BOUNDARY_CONFIGS.get(arch, PHASE_BOUNDARY_CONFIG_DEFAULT))
+
+
+# =============================================================================
+# DATA LOCATION HELPER
+# =============================================================================
+
+def resolve_csv_path(dataset_name: str, data_dir) -> Path:
+    """
+    Build the full path to a dataset's CSV inside a caller-supplied directory.
+
+    The library never guesses where the benchmark files live; `data_dir` is
+    always supplied by the calling script.
+
+    Args:
+        dataset_name (str):         Key in DATASET_CONFIGS, e.g. 'ETTh1'.
+        data_dir (str | Path):      Folder holding the benchmark CSVs.
+
+    Returns:
+        Path: `data_dir` joined with the dataset's CSV file name. The file is
+        not required to exist — checking is left to the caller, which can give
+        a better error message than this function could.
+
+    Raises:
+        KeyError: If `dataset_name` is not a known dataset.
+    """
+    if dataset_name not in DATASET_CONFIGS:
+        raise KeyError(
+            f"Unknown dataset '{dataset_name}'. "
+            f"Known datasets: {sorted(DATASET_CONFIGS)}."
+        )
+    return Path(data_dir) / DATASET_CONFIGS[dataset_name]['csv_name']

@@ -23,6 +23,10 @@ import torch
 from ts_distill.trajectory.recorder.base import BaseTrajectoryRecorder
 from ts_distill.trainer.callback.base import BaseCallback
 
+from ts_distill._logging import get_logger
+
+logger = get_logger(__name__)
+
 
 class SimpleRecorder(BaseTrajectoryRecorder, BaseCallback):
     """
@@ -119,9 +123,9 @@ class SimpleRecorder(BaseTrajectoryRecorder, BaseCallback):
         the trajectory across multiple distillation runs.
         """
         torch.save(self.trajectory, file_path)
-        print(f"   Trajectory saved → {file_path}  ({len(self.trajectory)} checkpoints)")
+        logger.info(f"   Trajectory saved -> {file_path}  ({len(self.trajectory)} checkpoints)")
 
     def load_buffer(self, file_path: str):
         """Load a previously saved trajectory, replacing the current one."""
         self.trajectory = torch.load(file_path)
-        print(f"   Trajectory loaded ← {file_path}  ({len(self.trajectory)} checkpoints)")
+        logger.info(f"   Trajectory loaded <- {file_path}  ({len(self.trajectory)} checkpoints)")

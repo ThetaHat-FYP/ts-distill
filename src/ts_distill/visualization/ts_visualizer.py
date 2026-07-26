@@ -3,6 +3,10 @@ import torch
 import numpy as np
 from .base import BaseVisualizer
 
+from ts_distill._logging import get_logger
+
+logger = get_logger(__name__)
+
 
 class TimeSeriesVisualizer(BaseVisualizer):
     
@@ -152,7 +156,7 @@ class TimeSeriesVisualizer(BaseVisualizer):
         if self.fig is None:
             raise ValueError("No plot to save. Create a plot first.")
         self.fig.savefig(filepath, dpi=300, bbox_inches='tight')
-        print(f"Plot saved to {filepath}")
+        logger.info(f"Plot saved to {filepath}")
     
     def show(self):
         plt.show()

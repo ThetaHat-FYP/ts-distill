@@ -7,6 +7,10 @@ from ts_distill.distillation_core.distillation_algorithm.base import BaseDistill
 from ts_distill.distillation_core.initializer.base import BaseInitializer
 from ts_distill.trajectory.matcher.base import BaseTrajectoryMatcher
 
+from ts_distill._logging import get_logger
+
+logger = get_logger(__name__)
+
 
 class FRePODistiller(BaseDistiller):
     """Feature Regression based Prototype Optimization (FRePo) for time-series.
@@ -67,7 +71,7 @@ class FRePODistiller(BaseDistiller):
 
         optimizer_img = torch.optim.SGD([synthetic_data], lr=self.synthetic_lr, momentum=0.5)
 
-        print(f"FRePo distilling {n_synthetic} samples over {n_steps} steps...")
+        logger.info(f"FRePo distilling {n_synthetic} samples over {n_steps} steps...")
 
         for step in range(n_steps):
             optimizer_img.zero_grad()
@@ -87,7 +91,7 @@ class FRePODistiller(BaseDistiller):
             optimizer_img.step()
 
             if (step + 1) % 5 == 0 or step == 0:
-                print(f"[Step {step + 1:>3}/{n_steps}] Loss: {loss.item():.4f}")
+                logger.info(f"[Step {step + 1:>3}/{n_steps}] Loss: {loss.item():.4f}")
 
         return synthetic_data.detach()
 

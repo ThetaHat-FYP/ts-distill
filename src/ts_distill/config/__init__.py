@@ -11,6 +11,7 @@ from ts_distill.config.default_config import (
     DATASET_CONFIGS,
     DATASET_PERIODS,
     MODEL_CONFIGS,
+    resolve_csv_path,
     PHASE_BOUNDARY_CONFIGS,
     PHASE_BOUNDARY_CONFIG_DEFAULT,
     phase_boundary_config,
@@ -24,4 +25,5 @@ __all__ = [
     'PHASE_BOUNDARY_CONFIGS',
     'PHASE_BOUNDARY_CONFIG_DEFAULT',
     'phase_boundary_config',
+    'resolve_csv_path',
 ]

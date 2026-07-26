@@ -385,14 +385,18 @@ def predict_r_star(
     if verbose:
         r_min, r_max = _resolve_range(model_name, arch_ratio_range_override or {})
         print(f"\n  r* Prediction for {model_name}")
-        print(f"  {'─'*40}")
+        # ASCII rule on purpose: box-drawing characters raise UnicodeEncodeError
+        # on Windows consoles using the cp1252 code page.
+        print(f"  {'-'*40}")
         print(f"  error_ratio score : {s_error:.4f}  (weight {weights[0]})")
         print(f"  divergence score  : {s_div:.4f}  (weight {weights[1]})"
               + ("  [channel-aware: worst channel]" if channel_aware else ""))
         print(f"  structure loss    : {s_str:.4f}  (weight {weights[2]})"
               + ("  [channel-aware: mean of channels]" if channel_aware else ""))
         print(f"  arch sensitivity  : {s_arch:.4f}  (weight {weights[3]})")
-        print(f"  {'─'*40}")
+        # ASCII rule on purpose: box-drawing characters raise UnicodeEncodeError
+        # on Windows consoles using the cp1252 code page.
+        print(f"  {'-'*40}")
         print(f"  quality demand    : {demand:.4f}")
         print(f"  ratio range used  : [{r_min}%, {r_max}%]")
         print(f"  predicted r*      : {r_star}%")

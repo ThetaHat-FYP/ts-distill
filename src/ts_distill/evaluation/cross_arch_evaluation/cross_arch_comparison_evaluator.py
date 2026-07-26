@@ -38,6 +38,10 @@ from ts_distill.evaluation.evaluation import Evaluator
 from ts_distill.trainer.trainer.trainer import Trainer
 from ts_distill.trajectory.matcher.mse_matcher import MSEMatcher
 
+from ts_distill._logging import get_logger
+
+logger = get_logger(__name__)
+
 
 class CrossArchComparisonEvaluator(BaseEvaluator):
     """
@@ -131,7 +135,7 @@ class CrossArchComparisonEvaluator(BaseEvaluator):
                 synthetic_init=synthetic_init, n_steps=cfg["n_distill_steps"], val_data=val_data,
             )
         except Exception as exc:
-            print(f"  [FAIL] param_mtt distillation: {exc}")
+            logger.info(f"  [FAIL] param_mtt distillation: {exc}")
 
         torch.set_rng_state(post_expert_rng_state)
         try:
@@ -143,7 +147,7 @@ class CrossArchComparisonEvaluator(BaseEvaluator):
                 synthetic_init=synthetic_init, n_steps=cfg["n_distill_steps"], val_data=val_data,
             )
         except Exception as exc:
-            print(f"  [FAIL] phase_aware_mtt distillation: {exc}")
+            logger.info(f"  [FAIL] phase_aware_mtt distillation: {exc}")
 
         return synthetic
 
@@ -217,7 +221,7 @@ class CrossArchComparisonEvaluator(BaseEvaluator):
                         student_name, synthetic_seq, eval_val_loader, test_data, cfg,
                     )
                 except Exception as exc:
-                    print(f"    [FAIL] {method} synthetic eval ({student_name}): {exc}")
+                    logger.info(f"    [FAIL] {method} synthetic eval ({student_name}): {exc}")
                     row = {**row_base, "real_mse": real_mse,
                            "notes": f"synthetic_eval_failed: {str(exc)[:120]}"}
                     rows.append(row)
@@ -255,7 +259,7 @@ class CrossArchComparisonEvaluator(BaseEvaluator):
         if key in self._real_mse_cache:
             return self._real_mse_cache[key]
 
-        print(f"    Computing real baseline for {student_name}...")
+        logger.info(f"    Computing real baseline for {student_name}...")
         torch.manual_seed(0)
         model   = self.model_factory(student_name).to(self.device)
         trainer = Trainer(
@@ -272,7 +276,7 @@ class CrossArchComparisonEvaluator(BaseEvaluator):
                 model, test_data.to(self.device), eval_batch_size=cfg["eval_batch_size"],
             )["MSE"]
         except Exception as exc:
-            print(f"    [FAIL] real eval ({student_name}): {exc}")
+            logger.info(f"    [FAIL] real eval ({student_name}): {exc}")
             mse = float("nan")
 
         self._real_mse_cache[key] = mse

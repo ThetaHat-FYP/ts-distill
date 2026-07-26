@@ -224,7 +224,7 @@ def main() -> None:
         ratios, mses = extract_ratio_curve(row)
 
         if len(ratios) < 2:
-            print(f"  [SKIP] {dataset} x {model} — fewer than 2 ratio points")
+            print(f"  [SKIP] {dataset} x {model} - fewer than 2 ratio points")
             continue
 
         result = find_optimal_ratio(ratios, mses, args.w_mse, args.w_compression)
@@ -253,8 +253,8 @@ def main() -> None:
 
     summary_path = OUTPUT_DIR / 'optimal_ratios_summary.csv'
     pd.DataFrame(summary_rows).to_csv(summary_path, index=False)
-    print(f"\nSummary saved  → {summary_path}")
-    print(f"Plots saved    → {OUTPUT_DIR}/*_optimal_ratio.png")
+    print(f"\nSummary saved  -> {summary_path}")
+    print(f"Plots saved    -> {OUTPUT_DIR}/*_optimal_ratio.png")
 
 
 if __name__ == '__main__':

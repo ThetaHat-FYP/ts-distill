@@ -8,6 +8,10 @@ from ts_distill.distillation_core.initializer.base import BaseInitializer
 from ts_distill.trajectory.matcher.base import BaseTrajectoryMatcher
 from ts_distill.trajectory.recorder.base import BaseTrajectoryRecorder
 
+from ts_distill._logging import get_logger
+
+logger = get_logger(__name__)
+
 
 class MTTDistiller(BaseDistiller):
     """
@@ -99,8 +103,8 @@ class MTTDistiller(BaseDistiller):
         """
         Run the MTT outer loop to optimise the synthetic sequence.
 
-        The caller creates the initial tensor via
-        RealSampleInitializer.initialize_sequence() and passes it here.
+        The caller creates the initial tensor via any initializer's
+        initialize_sequence() (e.g. RandomSampleInitializer) and passes it here.
         This keeps the initialisation strategy decoupled from the algorithm.
 
         Args:
@@ -139,7 +143,7 @@ class MTTDistiller(BaseDistiller):
         best_synthetic = synthetic_data.detach().clone()
         best_val_mse   = float('inf')
 
-        print(f"Distilling sequence of length {n_synthetic} over {n_steps} steps...")
+        logger.info(f"Distilling sequence of length {n_synthetic} over {n_steps} steps...")
 
         # ── Outer loop ────────────────────────────────────────────────────────
         for step in range(n_steps):
@@ -244,7 +248,7 @@ class MTTDistiller(BaseDistiller):
                 grad_norm = (synthetic_data.grad.norm().item()
                              if synthetic_data.grad is not None else 0.0)
                 seq_delta = (synthetic_data.detach() - synthetic_data_init).abs().mean().item()
-                print(
+                logger.info(
                     f"[Step {step + 1:>3}/{n_steps}]"
                     f"  loss={grand_loss.item():.4f}"
                     f"  param_loss={param_loss.item():.3f}"
@@ -265,9 +269,9 @@ class MTTDistiller(BaseDistiller):
                 if val_mse < best_val_mse:
                     best_val_mse   = val_mse
                     best_synthetic = synthetic_data.detach().clone()
-                    print(f"   [Snapshot @ step {step + 1}] New best val MSE: {val_mse:.6f} (saved)")
+                    logger.info(f"   [Snapshot @ step {step + 1}] New best val MSE: {val_mse:.6f} (saved)")
                 else:
-                    print(f"   [Snapshot @ step {step + 1}] Val MSE: {val_mse:.6f} (best: {best_val_mse:.6f})")
+                    logger.info(f"   [Snapshot @ step {step + 1}] Val MSE: {val_mse:.6f} (best: {best_val_mse:.6f})")
 
         # ── Return ─────────────────────────────────────────────────────────────
         # If validation tracking was active, return the best checkpoint found
@@ -279,8 +283,8 @@ class MTTDistiller(BaseDistiller):
                 val_mse = self._evaluate_snapshot(synthetic_data.detach(), val_data)
                 best_val_mse   = val_mse
                 best_synthetic = synthetic_data.detach().clone()
-                print(f"   [Snapshot @ step {n_steps}] Val MSE: {val_mse:.6f} (end-of-run)")
-            print(f"   Best snapshot val MSE: {best_val_mse:.6f}")
+                logger.info(f"   [Snapshot @ step {n_steps}] Val MSE: {val_mse:.6f} (end-of-run)")
+            logger.info(f"   Best snapshot val MSE: {best_val_mse:.6f}")
             return best_synthetic
 
         return synthetic_data.detach()

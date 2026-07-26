@@ -33,6 +33,10 @@ import torch.nn.functional as F
 
 from ts_distill.distillation_core.distillation_algorithm.mtt import MTTDistiller
 
+from ts_distill._logging import get_logger
+
+logger = get_logger(__name__)
+
 
 class PredictiveMTTDistiller(MTTDistiller):
     """
@@ -74,7 +78,7 @@ class PredictiveMTTDistiller(MTTDistiller):
         best_synthetic = synthetic_data.detach().clone()
         best_val_mse   = float("inf")
 
-        print(
+        logger.info(
             f"[PredMTT] Distilling sequence of length {n_synthetic} "
             f"over {n_steps} steps..."
         )
@@ -177,7 +181,7 @@ class PredictiveMTTDistiller(MTTDistiller):
             optimizer_img.step()
 
             if (step + 1) % 5 == 0 or step == 0:
-                print(f"[Step {step + 1:>3}/{n_steps}] Loss: {grand_loss.item():.4f}")
+                logger.info(f"[Step {step + 1:>3}/{n_steps}] Loss: {grand_loss.item():.4f}")
 
             # ── Step 8 (optional): Best-snapshot validation ───────────────────
             if val_data is not None and (step + 1) % val_snapshot_every == 0:
@@ -185,12 +189,12 @@ class PredictiveMTTDistiller(MTTDistiller):
                 if val_mse < best_val_mse:
                     best_val_mse   = val_mse
                     best_synthetic = synthetic_data.detach().clone()
-                    print(
+                    logger.info(
                         f"   [Snapshot @ step {step + 1}] "
                         f"New best val MSE: {val_mse:.6f} (saved)"
                     )
                 else:
-                    print(
+                    logger.info(
                         f"   [Snapshot @ step {step + 1}] "
                         f"Val MSE: {val_mse:.6f} (best: {best_val_mse:.6f})"
                     )
@@ -203,11 +207,11 @@ class PredictiveMTTDistiller(MTTDistiller):
                 )
                 best_val_mse   = val_mse
                 best_synthetic = synthetic_data.detach().clone()
-                print(
+                logger.info(
                     f"   [Snapshot @ step {n_steps}] "
                     f"Val MSE: {val_mse:.6f} (end-of-run)"
                 )
-            print(f"   Best snapshot val MSE: {best_val_mse:.6f}")
+            logger.info(f"   Best snapshot val MSE: {best_val_mse:.6f}")
             return best_synthetic
 
         return synthetic_data.detach()

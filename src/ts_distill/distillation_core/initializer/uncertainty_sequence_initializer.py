@@ -22,6 +22,10 @@ from typing import Callable, Optional
 # Assuming this is your base class import path
 from ts_distill.distillation_core.initializer.base import BaseInitializer
 
+from ts_distill._logging import get_logger
+
+logger = get_logger(__name__)
+
 
 class UncertaintySampleInitializer(BaseInitializer):
     """
@@ -73,7 +77,7 @@ class UncertaintySampleInitializer(BaseInitializer):
             Tensor of shape `shape` with requires_grad=True.
         """
         if random_data_reference is None:
-            print("  Warning: No reference data provided for Uncertainty init. Falling back to noise.")
+            logger.info("  Warning: No reference data provided for Uncertainty init. Falling back to noise.")
             data = torch.randn(shape) * 0.1
         else:
             n_samples = shape[0]
@@ -144,7 +148,7 @@ class UncertaintySampleInitializer(BaseInitializer):
         synthetic_seq = raw_train_data[best_idx : best_idx + n_synthetic].clone()
         synthetic_seq.requires_grad_(True)
 
-        print(f"  Uncertainty sequence initialised from real data (Hardest sequence) "
+        logger.info(f"  Uncertainty sequence initialised from real data (Hardest sequence) "
               f"(rows {best_idx}–{best_idx + n_synthetic - 1}), "
               f"shape {tuple(synthetic_seq.shape)}")
 
