@@ -1,3 +1,24 @@
+"""
+Standard evaluator — trains nothing, just scores a trained model on real data.
+
+Splits each window at seq_len into (input, target), runs the model in eval mode,
+and returns MSE / RMSE. Training belongs to `Trainer`; this class only measures.
+
+Produces every headline utility number in the project:
+
+    real_mse       probe trained on real data      (the lower bound)
+    transfer_mse   probe trained on synthetic data (what distillation costs)
+    hybrid MSE     probe trained on a mixture
+
+MSE is summed with reduction='sum' and divided by element count, so the value
+does not depend on batch size or on the last batch being short.
+
+RNG caution: iterating the internal DataLoader consumes one torch RNG draw.
+Calling this between a seed and a later random step shifts everything after it —
+which is why the demo scripts evaluate the real baseline AFTER distillation
+rather than before.
+"""
+
 import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
@@ -18,8 +39,10 @@ class Evaluator(BaseEvaluator):
 
     def __init__(self, seq_len, batch_size=64):
         """
-        seq_len   : input length; the rest of the window is the forecast target.
-        batch_size: inference batch size (does not affect accuracy).
+        Args:
+            seq_len (int):    Input length; the rest of each window is the target.
+            batch_size (int): Inference batch size. Does not affect the result —
+                              the loss is summed and divided by element count.
         """
         self.seq_len    = seq_len
         self.batch_size = batch_size

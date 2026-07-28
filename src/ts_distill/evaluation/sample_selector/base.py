@@ -1,3 +1,14 @@
+"""
+Anchor selector interface — which REAL windows get mixed into synthetic data.
+
+Hybrid mixing adds a fraction of real data back to the distilled set. This
+interface decides WHICH real windows to add; the fraction itself is chosen
+elsewhere (`predict_r_star` or `find_optimal_ratio`).
+
+Concrete strategies live in `ts_distill.evaluation.hybrid_evaluation.hybrid`:
+random, uniform stride, importance-weighted by expert loss, and diversity-based.
+"""
+
 from abc import ABC, abstractmethod
 import torch
 

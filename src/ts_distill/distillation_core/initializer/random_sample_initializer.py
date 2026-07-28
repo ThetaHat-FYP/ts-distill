@@ -107,7 +107,7 @@ class RandomSampleInitializer(BaseInitializer):
         synthetic_seq.requires_grad_(True)
 
         logger.info(f"   Synthetic sequence initialised from random data "
-              f"(rows {start_idx}–{start_idx + n_synthetic - 1}), "
+              f"(rows {start_idx}-{start_idx + n_synthetic - 1}), "
               f"shape {tuple(synthetic_seq.shape)}")
 
         return synthetic_seq

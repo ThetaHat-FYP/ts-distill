@@ -30,11 +30,14 @@ class SimpleCallback(BaseCallback):
         self.print_every = print_every
 
     def on_train_begin(self, model, **kwargs):
+        """Announce the start of training."""
         logger.info("   Training started...")
 
     def on_epoch_end(self, model, epoch: int, loss: float, **kwargs):
+        """Log the loss every `print_every` epochs."""
         if (epoch + 1) % self.print_every == 0:
             logger.info(f"   Epoch {epoch + 1:>4} | Loss: {loss:.6f}")
 
     def on_train_end(self, model, **kwargs):
+        """Announce completion."""
         logger.info("   Training complete.")

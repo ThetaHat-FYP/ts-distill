@@ -1,3 +1,23 @@
+"""
+Training loop — used for the expert, the probes, and every baseline.
+
+Each batch arrives as (B, window_size, C) and is split at `seq_len` into input
+and forecast target, so one loop serves every model and dataset.
+
+Two modes:
+  fit(...)                      train for a fixed number of epochs
+  fit(..., val_loader=, patience=)  early-stop on validation loss and RESTORE
+                                    the best weights before returning
+
+Restoring the best weights matters: without it, a probe would be scored on
+whatever overfitted state it happened to stop in, so utility numbers would
+reflect the stopping point rather than the data being judged.
+
+Callbacks fire at epoch boundaries and are how the expert trajectory gets
+recorded (`SimpleRecorder`) and how the validation curve is captured for phase
+detection (`ValLossRecorderCallback`).
+"""
+
 import copy
 import torch
 
@@ -20,6 +40,7 @@ class Trainer(BaseTrainer):
         self.seq_len = seq_len
 
     def train_epoch(self, dataloader) -> float:
+        """Run one epoch. Returns the mean batch loss."""
         self.model.train()
         total_loss = 0.0
         n_batches = 0

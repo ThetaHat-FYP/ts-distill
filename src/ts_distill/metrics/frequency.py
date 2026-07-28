@@ -1,3 +1,19 @@
+"""
+Spectrum fidelity — how far is the synthetic frequency content from the real?
+
+Reports the L2 distance between magnitude spectra. This is `fft_distance`, the
+quantity `FFTAmplitudePostFix` is designed to reduce, and the two use the SAME
+segment-averaged real target so the numbers are directly comparable.
+
+Magnitude only, never phase: phase between two independently generated
+sequences is arbitrary, so comparing it would measure noise.
+
+The real target is averaged over every non-overlapping length-M window of the
+full training set, not taken from the first M rows. The real sequence has tens
+of thousands of steps against the synthetic's few hundred, so scoring against a
+single arbitrary window would make the metric depend on where that window fell.
+"""
+
 import numpy as np
 
 from ts_distill.metrics.base import BaseTemporalMetric

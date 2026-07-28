@@ -1,3 +1,19 @@
+"""
+Time-series plotting — makes distillation damage visible to the eye.
+
+MSE says the synthetic data trains a good model; a plot says whether it still
+looks like a time series. The two disagree often, which is the whole reason the
+fidelity metrics exist — this module is how that disagreement is shown.
+
+`plot_comparison` and `plot_overlay` are the ones used in the report: real vs
+synthetic before and after the FFT post-fix, where restored periodicity is
+obvious at a glance.
+
+Windowed input (N, window_size, C) is reduced to one channel (`feature_idx`)
+and, when `concatenate` is set, joined end to end so periodic structure spans
+window boundaries instead of restarting every window.
+"""
+
 import matplotlib.pyplot as plt
 import torch
 import numpy as np
@@ -9,7 +25,18 @@ logger = get_logger(__name__)
 
 
 class TimeSeriesVisualizer(BaseVisualizer):
-    
+    """
+    Plots real and synthetic sequences for visual comparison.
+
+    Args:
+        figsize (tuple):    Matplotlib figure size.
+        max_samples (int):  Cap on windows drawn, so dense data stays readable.
+        feature_idx (int):  Which channel to plot from multivariate data.
+        concatenate (bool): True joins windows end to end into one continuous
+                            line (periodicity stays visible across boundaries);
+                            False overlays each window separately.
+    """
+
     def __init__(self, figsize=(12, 6), max_samples=10, feature_idx=0, concatenate=True):
         self.figsize = figsize
         self.max_samples = max_samples
@@ -19,6 +46,7 @@ class TimeSeriesVisualizer(BaseVisualizer):
         self.ax = None
     
     def plot_data(self, data, title=None):
+        """Plot one sequence. Returns the figure."""
         data = self._to_numpy(data)
         
         self.fig, self.ax = plt.subplots(figsize=self.figsize)
@@ -41,6 +69,7 @@ class TimeSeriesVisualizer(BaseVisualizer):
         return self.fig
     
     def plot_comparison(self, real_data, synthetic_data, title=None):
+        """Plot real and synthetic on shared axes. Returns the figure."""
         real_data = self._to_numpy(real_data)
         synthetic_data = self._to_numpy(synthetic_data)
         
@@ -77,6 +106,7 @@ class TimeSeriesVisualizer(BaseVisualizer):
         return self.fig
     
     def plot_overlay(self, real_data, synthetic_data, title=None):
+        """Alias for plot_comparison — kept for call-site readability."""
         return self.plot_comparison(real_data, synthetic_data, title)
     
     def plot_side_by_side(self, real_data, synthetic_data, n_samples=3):
@@ -153,21 +183,25 @@ class TimeSeriesVisualizer(BaseVisualizer):
         return self.fig
     
     def save_plot(self, filepath):
+        """Write the current figure to disk at 300 dpi (print quality)."""
         if self.fig is None:
             raise ValueError("No plot to save. Create a plot first.")
         self.fig.savefig(filepath, dpi=300, bbox_inches='tight')
         logger.info(f"Plot saved to {filepath}")
     
     def show(self):
+        """Display the figure (blocks in a script; inline in a notebook)."""
         plt.show()
     
     def close(self):
+        """Release the figure. Call this in loops or matplotlib leaks memory."""
         if self.fig is not None:
             plt.close(self.fig)
             self.fig = None
             self.ax = None
     
     def _to_numpy(self, data):
+        """Tensor -> numpy, and reduce windowed (N, W, C) input to one channel."""
         if torch.is_tensor(data):
             data = data.detach().cpu().numpy()
         

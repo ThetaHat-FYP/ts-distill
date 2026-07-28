@@ -1,3 +1,16 @@
+"""
+Autocorrelation fidelity — does the synthetic data repeat like the real data?
+
+Compares autocorrelation functions and reports the error in two lag bands:
+SHORT lags (up to one seasonal period) capture daily/weekly cycles, LONG lags
+capture slow decay. Splitting them tests the claim that distillation preserves
+obvious periodicity while losing long-range dependence.
+
+Note this metric improves for free when the frequency spectrum is repaired:
+spectrum and autocorrelation are a Fourier transform pair (Wiener-Khinchin), so
+`FFTAmplitudePostFix` moves both at once.
+"""
+
 import numpy as np
 from statsmodels.tsa.stattools import acf
 

@@ -281,7 +281,7 @@ DISTILL_CONFIG = {
     'eval_max_epochs':    300,   # hard cap; early stopping fires well before this
     'eval_lr':          0.001,
     'eval_batch_size':     32,
-    'early_stop_patience': 10,   # val epochs without improvement → restore best weights
+    'early_stop_patience': 10,   # val epochs without improvement -> restore best weights
     # ACF metric settings
     'acf_n_lags':           100,    # total ACF lags (must be < n_synthetic)
 }

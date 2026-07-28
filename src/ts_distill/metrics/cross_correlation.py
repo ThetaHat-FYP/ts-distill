@@ -1,3 +1,20 @@
+"""
+Cross-channel fidelity — are the relationships BETWEEN channels preserved?
+
+Every other metric in this package scores each channel in isolation. A
+multivariate forecaster also exploits how channels move together (in ETT, oil
+temperature tracks load), and synthetic data can reproduce each channel's
+temporal shape perfectly while destroying those couplings.
+
+Compares Pearson correlation matrices via Frobenius norm, scaled by channel
+count so datasets of different width stay comparable.
+
+This metric can DEGRADE as post-fix strength rises: `FFTAmplitudePostFix`
+processes each channel independently, so pushing every channel toward the real
+spectrum can pull them out of step with each other. Worth reporting as the
+honest cost of a per-channel correction.
+"""
+
 import numpy as np
 
 

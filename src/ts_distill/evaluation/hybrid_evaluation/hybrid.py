@@ -231,6 +231,7 @@ class BaseHybridEvaluator(BaseEvaluator):
         seq_len = self.seq_len
  
         def _split_batch(batch):
+            """Split a window into (input, target) at seq_len."""
             data = batch[0].to(self.device)
             if data.dim() == 2:
                 data = data.unsqueeze(-1)
@@ -773,6 +774,7 @@ class DiversityAnchorSelector(BaseAnchorSelector):
         expert_losses=None,
     ) -> torch.Tensor:
  
+        """Choose which real windows to mix in, per this strategy."""
         N = len(data)
         n = min(n_samples, N)
  

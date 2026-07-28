@@ -1,3 +1,15 @@
+"""
+Trajectory recorder interface — captures the expert's PATH, not its endpoint.
+
+MTT matches how a model travels through parameter space, so the intermediate
+weights are the training signal and must be saved as training happens; they
+cannot be reconstructed from the final checkpoint.
+
+Distillation samples (theta_start, theta_target) pairs a fixed gap apart from
+what is recorded here, so the recorder's density sets which segments can be
+matched at all.
+"""
+
 from abc import ABC, abstractmethod
 from ts_distill.trainer.callback.base import BaseCallback
 

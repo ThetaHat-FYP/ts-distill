@@ -1,3 +1,20 @@
+"""
+Geometry initializer — starts distillation from the most TYPICAL window.
+
+Scans every candidate block of `n_synthetic` timesteps and picks the medoid:
+the block closest to the dataset's average behaviour. Deterministic, so the
+same data always yields the same starting point.
+
+Trade-off against the alternatives. The medoid is the FLATTEST, least eventful
+stretch of the series, so it carries little information for a probe to learn
+from — single-seed transfer MSE is often worse than a random block. What it
+buys is zero seed-to-seed variance, and synthetic data that is complementary
+rather than redundant to real data, which shows up as a larger hybrid-mixing
+gain. Compare initializers on variance and post-mixing MSE, not on one seed.
+
+Note the file name is misspelled (geommetry); the class name is correct.
+"""
+
 import torch
 from ts_distill.distillation_core.initializer.base import BaseInitializer
 
@@ -6,7 +23,10 @@ from ts_distill._logging import get_logger
 logger = get_logger(__name__)
 
 class GeometrySequenceInitializer(BaseInitializer):
+    """Picks the medoid block — the stretch closest to the dataset average."""
+
     def initialize(self, shape: tuple, real_data_reference: torch.Tensor = None) -> torch.Tensor:
+        """Not supported — this strategy is continuous-sequence only (MTT)."""
         raise NotImplementedError("GeometrySequenceInitializer only supports continuous sequence initialization.")
 
     def initialize_sequence(
@@ -62,7 +82,7 @@ class GeometrySequenceInitializer(BaseInitializer):
         synthetic_seq.requires_grad_(True)
 
         logger.info(f"  Geometry sequence initialised from random data (Most representative) "
-              f"(rows {best_idx}–{best_idx + n_synthetic - 1}), "
+              f"(rows {best_idx}-{best_idx + n_synthetic - 1}), "
               f"shape {tuple(synthetic_seq.shape)}")
 
         return synthetic_seq

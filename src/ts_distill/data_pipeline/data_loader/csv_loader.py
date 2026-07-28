@@ -1,3 +1,14 @@
+"""
+CSV loading — read a benchmark file into a DataFrame, nothing more.
+
+Deliberately stops at loading. Splitting, scaling, and windowing must happen in
+that order and only after the train boundary is known, or test statistics leak
+into training; those steps live in `splitter` and the calling script.
+
+Callers drop column 0 themselves — the benchmark CSVs carry a date column that
+is not a feature.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -25,6 +36,18 @@ class CSVDataLoader(BaseDataLoader):
     file_path: str | None = None
 
     def load_data(self, file_path: str) -> pd.DataFrame:
+        """
+        Read a CSV into a DataFrame and cache it on `self.data`.
+
+        Args:
+            file_path (str): Path to the CSV.
+
+        Returns:
+            pd.DataFrame: The loaded table, column 0 still the date column.
+
+        Raises:
+            FileNotFoundError: If the path does not exist.
+        """
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"CSV file not found: {file_path}")
@@ -54,6 +77,12 @@ class CSVDataLoader(BaseDataLoader):
         return self.data
 
     def view_data(self, n_rows: int = 5) -> None:
+        """
+        Print the first `n_rows` with all columns visible.
+
+        Prints rather than logs on purpose: the output IS the return value here,
+        because the caller explicitly asked to see the data.
+        """
         if self.data is None:
             raise ValueError("No data loaded. Call load_data(file_path) first.")
 

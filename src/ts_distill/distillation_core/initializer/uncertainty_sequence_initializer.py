@@ -149,7 +149,7 @@ class UncertaintySampleInitializer(BaseInitializer):
         synthetic_seq.requires_grad_(True)
 
         logger.info(f"  Uncertainty sequence initialised from real data (Hardest sequence) "
-              f"(rows {best_idx}–{best_idx + n_synthetic - 1}), "
+              f"(rows {best_idx}-{best_idx + n_synthetic - 1}), "
               f"shape {tuple(synthetic_seq.shape)}")
 
         return synthetic_seq

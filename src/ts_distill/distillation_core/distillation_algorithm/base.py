@@ -1,3 +1,12 @@
+"""
+Distiller interface — turn a large real dataset into a small synthetic one.
+
+Every algorithm takes an initializer (where the synthetic data starts) and a
+matcher (what distance to minimise), and returns an optimised synthetic
+sequence. The synthetic TENSOR is the parameter being learned; models created
+along the way are scratch work and discarded.
+"""
+
 from abc import ABC, abstractmethod
 
 from ts_distill.trajectory.matcher.base import BaseTrajectoryMatcher

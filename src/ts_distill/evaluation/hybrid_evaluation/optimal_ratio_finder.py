@@ -159,6 +159,7 @@ def find_optimal_ratio(
 
 def plot_cell(dataset: str, model: str, ratios: list, mses: list, result: dict, output_path: Path,
               real_mse: float = None, synth_mse: float = None) -> None:
+    """Plot one dataset x model MSE-vs-ratio curve and mark r*."""
     fig, ax = plt.subplots(figsize=(9, 5.5))
 
     ax.plot(result['r_grid'], result['mse_grid'], '-', color='#9AA5B1', linewidth=1.5,
@@ -191,7 +192,7 @@ def plot_cell(dataset: str, model: str, ratios: list, mses: list, result: dict, 
 
     ax.set_xlabel('Real Data Percentage (%)', fontsize=11)
     ax.set_ylabel('Test MSE', fontsize=11)
-    ax.set_title(f'{dataset} × {model} — Optimal Mixing Ratio\n'
+    ax.set_title(f'{dataset} × {model} - Optimal Mixing Ratio\n'
                  f'(compromise between compression and MSE)', fontsize=12, fontweight='bold')
     ax.legend(fontsize=8.5, loc='best')
     ax.grid(True, alpha=0.3)
@@ -201,6 +202,7 @@ def plot_cell(dataset: str, model: str, ratios: list, mses: list, result: dict, 
 
 
 def main() -> None:
+    """CLI entry point: read a hybrid-results CSV, emit r* summary + plots."""
     parser = argparse.ArgumentParser(description='Find compression/MSE-optimal mixing ratios')
     parser.add_argument('--csv', type=Path, default=DEFAULT_CSV,
                          help='CSV with dataset, model, and hybrid_<r>_mse columns')

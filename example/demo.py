@@ -93,7 +93,7 @@ DATA_DIR      = Path(__file__).resolve().parent      # this example/ folder
 DATASET       = 'ETTh2'     # any key in DATASET_CONFIGS
 MODEL         = 'DLinear'       # 'MLP' | 'DLinear' | 'CNN' | 'LSTM'
 INITIALIZER   = 'random'    # 'random' | 'geometric' | 'uncertainty'
-POSTFIX_ALPHA = 0.7      # FFT post-fix strength in [0, 1]  (0.0 disables it)
+POSTFIX_ALPHA = 0.8      # FFT post-fix strength in [0, 1]  (0.0 disables it)
 SEED          = 42
 
 # ── 1b. Phase-aware matching (same option as experiment_matrix.py) ───────────
@@ -462,7 +462,7 @@ def main():
         print(f"  [warn] dropped non-finite MSE at ratios {dropped}% (probe diverged)")
     if len(finite) < 2:
         raise RuntimeError(
-            "Too few finite MSE points to pick a ratio — most probes diverged. "
+            "Too few finite MSE points to pick a ratio - most probes diverged. "
             "Try a more stable model, a lower eval_lr, fewer distill steps, or a "
             "smaller postfix alpha."
         )

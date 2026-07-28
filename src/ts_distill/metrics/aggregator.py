@@ -1,3 +1,21 @@
+"""
+Metric orchestration — runs every fidelity metric and builds the result rows.
+
+Single entry point for scoring one distillation run. Calls all six metric
+classes and returns two things at once:
+
+  feature_rows   one row per CHANNEL, for per-channel analysis
+  main_row       one row per RUN, channels averaged, for the results table
+
+Both carry the same columns in a fixed order (MAIN_COLUMNS / FEATURE_COLUMNS)
+so results appended across many runs always line up into one CSV.
+
+Utility numbers (real_mse, transfer_mse) are passed IN rather than computed
+here — this class only measures fidelity; `ts_distill.evaluation` measures
+utility. Keeping both in the same row is what makes the utility-vs-fidelity
+trade-off visible in a single table.
+"""
+
 from typing import Dict, List, Tuple
 
 import numpy as np

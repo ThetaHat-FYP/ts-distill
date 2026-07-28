@@ -1,3 +1,19 @@
+"""
+Initializer interface — where the synthetic sequence starts before distillation.
+
+Two entry points for two families of algorithm:
+
+  initialize()           window-based algorithms (FRePo, CondTSF)
+  initialize_sequence()  continuous-sequence algorithms (MTT) — optional, the
+                         base raises NotImplementedError so misuse fails loudly
+
+Every sequence initializer picks ONE contiguous block of `n_synthetic`
+timesteps; they differ only in the rule used to choose it. Because that block
+merely sets the starting point of a non-convex optimisation, initializers are
+best compared on seed-to-seed VARIANCE and on downstream hybrid-mixing gain,
+not on a single run's transfer MSE.
+"""
+
 from abc import ABC, abstractmethod
 from typing import Optional
 import torch

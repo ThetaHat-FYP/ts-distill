@@ -1,3 +1,16 @@
+"""
+FRePo distiller — EXPERIMENTAL, not used in the reference experiments.
+
+Feature Regression with Prototype optimisation. Works on WINDOWS rather than a
+continuous sequence, and optimises synthetic prototypes through a kernel/feature
+regression objective instead of trajectory matching — so it uses an
+initializer's `initialize()` rather than `initialize_sequence()`.
+
+Status: implemented but not covered by the reported results, so it is not
+re-exported from the package namespace. Use `MTTDistiller` or
+`PhaseAwareMTTDistiller` for anything that needs to be reproducible.
+"""
+
 from typing import Callable, Optional
 
 import torch
@@ -57,6 +70,7 @@ class FRePODistiller(BaseDistiller):
         n_steps: int,
         n_synthetic: Optional[int] = None,
     ) -> torch.Tensor:
+        """Run the FRePo outer loop. Returns the optimised synthetic windows."""
         if n_synthetic is None:
             n_synthetic = 50
 
@@ -96,6 +110,7 @@ class FRePODistiller(BaseDistiller):
         return synthetic_data.detach()
 
     def _online_fit_on_synthetic(self, model: nn.Module, synthetic_data: torch.Tensor) -> None:
+        """Fit the online model on current synthetic prototypes."""
         model.train()
         opt = torch.optim.Adam(model.parameters(), lr=self.online_lr)
 
@@ -119,6 +134,7 @@ class FRePODistiller(BaseDistiller):
         proto_batch: torch.Tensor,
         real_batch: torch.Tensor,
     ) -> torch.Tensor:
+        """Feature-regression loss between synthetic and real batches."""
         seq_len = proto_batch.shape[1] // 2
 
         proto_x = proto_batch[:, :seq_len, :]
@@ -155,6 +171,7 @@ class FRePODistiller(BaseDistiller):
         return self.criterion(pred_r, y_r)
 
     def _sample_batch(self, data: torch.Tensor, batch_size: int) -> torch.Tensor:
+        """Draw a random mini-batch of real windows."""
         n = data.shape[0]
         if n <= batch_size:
             return data
@@ -162,6 +179,7 @@ class FRePODistiller(BaseDistiller):
         return data[idx]
 
     def _extract_features(self, model: nn.Module, x: torch.Tensor) -> torch.Tensor:
+        """Model feature embedding, falling back to a flatten if absent."""
         if self.feature_extractor is not None:
             feat = self.feature_extractor(model, x)
         elif hasattr(model, "extract_features"):

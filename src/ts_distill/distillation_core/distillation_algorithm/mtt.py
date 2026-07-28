@@ -1,3 +1,50 @@
+"""
+MTT distillation — the core algorithm that compresses a dataset.
+
+Matching Training Trajectories. Standard distillation asks "what data makes a
+model predict well?"; MTT asks "what data makes a model TRAIN the same way?" It
+optimises a short synthetic sequence so that a student trained on it lands at
+the same parameters as an expert trained on the full real data.
+
+The loop, per outer step
+------------------------
+  1. Sample two checkpoints from the recorded expert trajectory,
+     `trajectory_gap` epochs apart: theta_start and theta_target.
+  2. Start a fresh student at theta_start.
+  3. Train that student on the SYNTHETIC data for `student_steps` steps, using
+     hand-rolled differentiable SGD (create_graph=True) so the whole inner loop
+     stays part of the graph.
+  4. Loss = distance(student_end, theta_target), normalised by
+     distance(theta_start, theta_target) so segments of different difficulty
+     contribute comparably.
+  5. Backpropagate THROUGH the inner loop into the synthetic tensor itself, and
+     step it with SGD.
+
+Step 3 is why the inner loop cannot use `torch.optim`: a normal optimiser
+updates weights in place and detaches, which severs the path back to the
+synthetic data. The gradient must flow through every inner step.
+
+What is being optimised
+-----------------------
+The synthetic tensor IS the parameter. The models are throwaway — created,
+trained a few steps, discarded. Only the data survives, which is why the result
+is a dataset rather than a checkpoint.
+
+Consequences worth knowing
+--------------------------
+* Second-order gradients make this expensive and memory-hungry; `student_steps`
+  is the main cost dial.
+* `synthetic_lr` must be LARGE (5.0 in the reference experiments). At a typical
+  0.01 the synthetic data barely moves from its initialisation, and the result
+  looks deceptively good because it is still almost-real data.
+* Nothing in this objective mentions spectra, periodicity, or autocorrelation.
+  The synthetic sequence is shaped like a time series but optimised purely as a
+  carrier of gradient directions — which is exactly why the temporal metrics in
+  `ts_distill.metrics` and the repair in `ts_distill.post_processing` exist.
+* Recurrent architectures distil poorly here: gradients vanish through the
+  unrolled inner loop, so LSTM is excluded from the reference experiments.
+"""
+
 from typing import Callable, Dict, Optional
 
 import torch

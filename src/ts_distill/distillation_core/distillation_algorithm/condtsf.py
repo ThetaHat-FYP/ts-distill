@@ -1,3 +1,15 @@
+"""
+CondTSF distiller — EXPERIMENTAL, not used in the reference experiments.
+
+Alternative to MTT: unrolls a student on synthetic (input, target) pairs and
+periodically refines the synthetic targets using teacher guidance, instead of
+matching the expert's parameter trajectory.
+
+Status: implemented but not covered by the reported results, so it is not
+re-exported from the package namespace. Use `MTTDistiller` or
+`PhaseAwareMTTDistiller` for anything that needs to be reproducible.
+"""
+
 from typing import Callable, Dict, Optional
 
 import torch
@@ -59,6 +71,7 @@ class CondTSFDistiller(BaseDistiller):
         n_steps: int,
         n_synthetic: Optional[int] = None,
     ) -> torch.Tensor:
+        """Run the CondTSF outer loop. Returns the optimised synthetic tensor."""
         if n_synthetic is None:
             n_synthetic = 50
 
@@ -112,6 +125,7 @@ class CondTSFDistiller(BaseDistiller):
         student_model: nn.Module,
         synthetic_data: torch.Tensor,
     ) -> torch.Tensor:
+        """Train a student on synthetic (input, target) pairs, in-graph."""
         params = {}
         for name, param in student_model.named_parameters():
             if self._student_init_params is not None and name in self._student_init_params:
@@ -163,6 +177,7 @@ class CondTSFDistiller(BaseDistiller):
         return weighted.sum() / weights.sum()
 
     def _apply_cond_refinement(self, synthetic_data: torch.Tensor) -> None:
+        """Periodically rewrite synthetic targets using teacher guidance."""
         if not self.teacher_state_dict:
             return
 

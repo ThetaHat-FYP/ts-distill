@@ -1,3 +1,11 @@
+"""
+Data loader interface — read a raw dataset file into a DataFrame.
+
+Deliberately thin, and deliberately does no splitting, scaling, or windowing.
+Those steps must happen in a fixed order and only after the train boundary is
+known, so they live in `splitter` and in the calling script instead.
+"""
+
 from abc import ABC, abstractmethod
 import pandas as pd
 

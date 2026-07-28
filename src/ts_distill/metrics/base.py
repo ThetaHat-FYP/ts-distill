@@ -1,3 +1,15 @@
+"""
+Temporal metric interface — the contract every fidelity metric implements.
+
+Distillation is scored on two axes. Utility (does a model trained on the
+synthetic data forecast well?) is measured by `ts_distill.evaluation`. FIDELITY
+(does the synthetic data still behave like a time series?) is measured here.
+
+Every metric compares one real sequence against one synthetic sequence and
+returns a PER-CHANNEL result, so `MetricAggregator` can emit both a per-channel
+table and a channel-averaged summary row from the same computation.
+"""
+
 from abc import ABC, abstractmethod
 
 import numpy as np

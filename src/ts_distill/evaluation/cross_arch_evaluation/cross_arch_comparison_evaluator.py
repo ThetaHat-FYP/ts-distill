@@ -83,6 +83,7 @@ class CrossArchComparisonEvaluator(BaseEvaluator):
     # =========================================================================
 
     def test_on_real(self, model, real_test_data, eval_batch_size: int = 32):
+        """Score a trained model on real test windows. Returns {'MSE','RMSE'}."""
         evaluator = Evaluator(seq_len=self.seq_len, batch_size=eval_batch_size)
         return evaluator.test_on_real(model, real_test_data)
 
@@ -255,6 +256,7 @@ class CrossArchComparisonEvaluator(BaseEvaluator):
     def _get_real_mse(
         self, student_name, seed, train_data, eval_val_loader, test_data, cfg,
     ) -> float:
+        """Train a probe on REAL data — the per-architecture lower bound."""
         key = (student_name, seed)
         if key in self._real_mse_cache:
             return self._real_mse_cache[key]
@@ -285,6 +287,7 @@ class CrossArchComparisonEvaluator(BaseEvaluator):
     def _eval_synthetic(
         self, student_name, synthetic_seq, eval_val_loader, test_data, cfg,
     ) -> float:
+        """Train a probe on SYNTHETIC data and score it on real test data."""
         syn_windows = torch.tensor(
             make_windows(synthetic_seq.cpu().numpy(), self.window_size), dtype=torch.float32,
         )

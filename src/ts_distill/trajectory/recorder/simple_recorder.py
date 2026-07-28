@@ -59,7 +59,8 @@ class SimpleRecorder(BaseTrajectoryRecorder, BaseCallback):
             self.record_checkpoint(model, step=epoch + 1)
 
     def on_train_end(self, model, **kwargs):
-        pass  # Nothing to do; trajectory is already fully recorded.
+        """Nothing to do — every checkpoint was saved as training progressed."""
+        pass
 
     # ── Checkpoint operations ────────────────────────────────────────────────
 

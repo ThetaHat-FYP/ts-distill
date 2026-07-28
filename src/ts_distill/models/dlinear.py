@@ -1,3 +1,23 @@
+"""
+DLinear forecaster — decomposition + linear (Zeng et al., 2022).
+
+Splits the input into TREND (moving average) and SEASONAL (the residual),
+forecasts each with its own linear layer, and adds the results. Despite having
+no non-linearity it is a strong benchmark forecaster, which is the point of the
+original paper.
+
+Two properties make it the best-behaved model in this library:
+
+* The explicit trend/seasonal split means it depends directly on the temporal
+  structure that distillation damages — so it is the most informative
+  architecture for the fidelity question.
+* Its validation curve is smooth and flattens hard, so phase-boundary detection
+  is reliable (its detector config is the strictest of the three).
+
+Weights initialise to 1/seq_len, matching the reference implementation, so the
+model starts as a moving average rather than at random.
+"""
+
 import torch
 import torch.nn as nn
 from ts_distill.models.base import BaseForecaster
@@ -12,6 +32,7 @@ class moving_avg(nn.Module):
         self.avg = nn.AvgPool1d(kernel_size=kernel_size, stride=stride, padding=0)
 
     def forward(self, x):
+        """Smooth (B, L, C) with a moving average, preserving length L."""
         # Asymmetric padding matches the reference implementation:
         # front pads (kernel_size-1)//2, end pads kernel_size//2.
         # For odd kernels both equal (kernel_size-1)//2; for even kernels the
@@ -32,6 +53,7 @@ class series_decomp(nn.Module):
         self.moving_avg = moving_avg(kernel_size, stride=1)
 
     def forward(self, x):
+        """Split x into (seasonal residual, trend), both shaped like x."""
         moving_mean = self.moving_avg(x)
         residual = x - moving_mean
         return residual, moving_mean
@@ -80,6 +102,7 @@ class DLinear(BaseForecaster):
             self.Linear_Trend.weight.data.fill_(1 / self.seq_len)
 
     def forward(self, x):
+        """Forecast each component separately, then sum: (B, pred_len, C)."""
         # x: (Batch, seq_len, Channels)
         seasonal_init, trend_init = self.decomposition(x)
         seasonal_init = seasonal_init.permute(0, 2, 1)   # (B, C, seq_len)

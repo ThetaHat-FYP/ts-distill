@@ -1,3 +1,17 @@
+"""
+Dominant-period fidelity — did the strongest cycle survive distillation?
+
+`FrequencyMetric` scores the whole spectrum; this asks the sharper question of
+whether the single most important cycle is still there, via two numbers:
+
+  freq_rank_error  how far the synthetic peak moved, in frequency bins
+  peak_mag_ratio   how much energy is left AT the real peak's frequency
+
+The two disagree in a diagnostic way. A synthetic sequence can keep the right
+dominant period (rank error 0) while losing most of its strength (high
+magnitude ratio) — the cycle is present in shape but flattened.
+"""
+
 import numpy as np
 
 from ts_distill.metrics.base import BaseTemporalMetric

@@ -1,3 +1,16 @@
+"""
+Trend fidelity — does the synthetic data drift like the real data?
+
+Runs STL (Seasonal-Trend decomposition via LOESS) on both sequences and
+compares only the trend components, isolating slow movement from the seasonal
+cycles that the frequency metrics already cover.
+
+Trend is the one axis the FFT post-fix cannot repair. Trend lives in the
+lowest-frequency bins including DC (the mean), and a partial amplitude blend
+does not restore them — so `trend_error` is expected to stay flat as alpha
+rises. That limitation is real and should be reported, not hidden.
+"""
+
 import numpy as np
 from statsmodels.tsa.seasonal import STL
 

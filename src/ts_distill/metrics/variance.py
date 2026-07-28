@@ -1,3 +1,18 @@
+"""
+Variance fidelity — is the synthetic data as spread out as the real data?
+
+Reports the relative difference in per-channel variance, scale-free so channels
+and datasets can be compared directly.
+
+Like trend, this cannot be fixed by a partial spectral blend. Parseval's
+theorem ties total variance to total spectral energy, so blending amplitudes
+part-way toward the real spectrum lands variance part-way too, never exactly
+right. Expect `variance_diff` to improve only at alpha = 1.
+
+Uses the FULL real sequence rather than truncating to the synthetic length:
+variance is a global property, so more observations give a better estimate.
+"""
+
 import numpy as np
 
 from ts_distill.metrics.base import BaseTemporalMetric

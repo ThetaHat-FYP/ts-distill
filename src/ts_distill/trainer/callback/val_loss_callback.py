@@ -29,10 +29,19 @@ class ValLossRecorderCallback(BaseCallback):
         self.val_losses: List[float] = []
 
     def on_train_begin(self, model, **kwargs):
+        """Clear the curve so a reused callback does not accumulate runs."""
         self.val_losses = []
 
     def on_epoch_end(self, model, epoch, loss, **kwargs):
+        """
+        Append this epoch's validation loss.
+
+        `eval_fn` usually iterates a DataLoader, which CONSUMES torch RNG and
+        shifts every later random draw. Wrap it in get_rng_state/set_rng_state
+        when downstream results must not change (see the demo scripts).
+        """
         self.val_losses.append(self.eval_fn())
 
     def on_train_end(self, model, **kwargs):
+        """Nothing to finalise — the curve is complete as of the last epoch."""
         pass
