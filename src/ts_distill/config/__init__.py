@@ -11,6 +11,9 @@ from ts_distill.config.default_config import (
     DATASET_CONFIGS,
     DATASET_PERIODS,
     MODEL_CONFIGS,
+    PHASE_BOUNDARY_CONFIGS,
+    PHASE_BOUNDARY_CONFIG_DEFAULT,
+    phase_boundary_config,
 )
 
 __all__ = [
@@ -18,4 +21,7 @@ __all__ = [
     'DATASET_CONFIGS',
     'DATASET_PERIODS',
     'MODEL_CONFIGS',
+    'PHASE_BOUNDARY_CONFIGS',
+    'PHASE_BOUNDARY_CONFIG_DEFAULT',
+    'phase_boundary_config',
 ]

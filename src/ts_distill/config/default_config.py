@@ -119,3 +119,69 @@ MODEL_CONFIGS = {
     'MLP':     {},
     'CNN':     {},
 }
+
+
+# =============================================================================
+# PHASE-BOUNDARY DETECTION  (per expert architecture)
+# =============================================================================
+# Phase-aware distillation matches parameters early in the expert's trajectory
+# and predictions late; T+ is the boundary between those phases, detected from
+# the expert's validation-loss curve by ValLossPlateauDetector.
+#
+#   T+ = epoch of the best smoothed val loss before `patience` consecutive
+#        epochs each fail to improve on the best-so-far by `min_delta_frac`
+#        (relative). `burn_in_epochs` skips the chaotic start of training, so
+#        the initial rapid drop cannot be mistaken for a plateau.
+#
+# These are PER-ARCHITECTURE on purpose. Each architecture's val-loss curve has
+# a different shape, so a single setting that finds a good mid-trajectory
+# boundary for one (DLinear) pushes others (CNN, MLP) so late that phase-aware
+# matching degenerates into plain parameter matching. Each entry is tuned so T+
+# lands in that architecture's genuine early->late transition.
+#
+# Use `phase_boundary_config(arch)` rather than indexing this dict directly, so
+# unknown architectures fall back to PHASE_BOUNDARY_CONFIG_DEFAULT.
+
+PHASE_BOUNDARY_CONFIGS = {
+    'DLinear': {
+        'smoothing_window': 5,      # Short window is fine, loss is smooth
+        'patience':         15,     # Wide enough to confirm a flatline
+        'min_delta_frac':   0.001,  # 0.1% - strict, DLinear stops improving completely
+        'burn_in_epochs':   0,      # No early chaos to ignore
+    },
+    'CNN': {
+        'smoothing_window': 10,     # Double smoothing to absorb gradient noise
+        'patience':         20,     # Longer, to survive temporary plateaus
+        'min_delta_frac':   0.01,   # 1.0% - fires when rapid learning stops, not all learning
+        'burn_in_epochs':   15,     # Ignore the chaotic first 15 epochs entirely
+    },
+    'MLP': {
+        'smoothing_window': 5,      # MLP curves are relatively smooth
+        'patience':         15,     # Standard patience
+        'min_delta_frac':   0.015,  # 1.5% - high threshold forces an earlier phase break
+        'burn_in_epochs':   5,      # Short grace period for the initial drop
+    },
+}
+
+# Fallback for any architecture without a dedicated entry above (e.g. LSTM).
+PHASE_BOUNDARY_CONFIG_DEFAULT = {
+    'smoothing_window': 5,
+    'patience':         15,
+    'min_delta_frac':   0.001,
+    'burn_in_epochs':   0,
+}
+
+
+def phase_boundary_config(arch: str) -> dict:
+    """
+    Return the ValLossPlateauDetector settings tuned for an expert architecture.
+
+    Args:
+        arch (str): Expert architecture name, e.g. 'DLinear', 'CNN', 'MLP'.
+
+    Returns:
+        dict: kwargs for ValLossPlateauDetector. A copy, so callers can tweak a
+        single field without mutating the shared defaults. Architectures with no
+        dedicated entry get PHASE_BOUNDARY_CONFIG_DEFAULT.
+    """
+    return dict(PHASE_BOUNDARY_CONFIGS.get(arch, PHASE_BOUNDARY_CONFIG_DEFAULT))

@@ -34,7 +34,9 @@ from torch.utils.data import DataLoader, TensorDataset
 sys.path.append(str(Path(__file__).parent.parent))
 
 # ── Everything below is imported from the built library ──────────────────────
-from ts_distill.config import DEFAULT_CONFIG, DATASET_CONFIGS, MODEL_CONFIGS
+from ts_distill.config import (
+    DEFAULT_CONFIG, DATASET_CONFIGS, MODEL_CONFIGS, phase_boundary_config,
+)
 
 from ts_distill.data_pipeline.data_loader.csv_loader import CSVDataLoader
 from ts_distill.data_pipeline.splitter import get_data_splits, make_windows
@@ -75,10 +77,10 @@ from ts_distill.evaluation.hybrid_evaluation.optimal_ratio_finder import find_op
 # =============================================================================
 
 # ── 1. What to run (change between runs to build the results table) ──────────
-DATASET       = 'ETTm2'     # any key in DATASET_CONFIGS
+DATASET       = 'ETTh2'     # any key in DATASET_CONFIGS
 MODEL         = 'DLinear'       # 'MLP' | 'DLinear' | 'CNN' | 'LSTM'
 INITIALIZER   = 'random'    # 'random' | 'geometric' | 'uncertainty'
-POSTFIX_ALPHA = 0      # FFT post-fix strength in [0, 1]  (0.0 disables it)
+POSTFIX_ALPHA = 0.7      # FFT post-fix strength in [0, 1]  (0.0 disables it)
 SEED          = 42
 
 # ── 1b. Phase-aware matching (same option as experiment_matrix.py) ───────────
@@ -90,11 +92,17 @@ SEED          = 42
 #   expert epoch, which consumes torch RNG, so numbers will NOT match the
 #   standard-MTT path — expected, it is a different method.
 USE_PHASE_AWARE_MATCHING = True
-PHASE_BOUNDARY_CONFIG = {
-    'smoothing_window': 5,
-    'patience':         5,
-    'min_delta_frac':   0.01,
-}
+
+# The detector settings live in the library (ts_distill.config), because they
+# are tuned per expert architecture and every script needs the same values.
+# `phase_boundary_config(MODEL)` returns the entry for this run's architecture,
+# falling back to a default for anything without a dedicated one (e.g. LSTM).
+# To override a single knob for an experiment, edit it here rather than in the
+# library — the returned dict is a copy, so this cannot leak into other runs:
+#
+#     PHASE_BOUNDARY_OVERRIDES = {'burn_in_epochs': 10}
+#
+PHASE_BOUNDARY_OVERRIDES = {}
 
 # ── 2. Hybrid mixer sweep grid ───────────────────────────────────────────────
 # 0.0 = pure synthetic. The real baseline is measured separately from the
@@ -260,15 +268,21 @@ def main():
 
     # ── STEP 2b: Detect phase boundary T+ (phase-aware matching only) ─────────
     phase_boundary = None
+    boundary_cfg   = None
     if USE_PHASE_AWARE_MATCHING:
-        boundary_result = ValLossPlateauDetector(**PHASE_BOUNDARY_CONFIG).detect(
+        # Config is chosen by the EXPERT architecture, matching experiment_matrix.
+        boundary_cfg = {**phase_boundary_config(MODEL), **PHASE_BOUNDARY_OVERRIDES}
+        boundary_result = ValLossPlateauDetector(**boundary_cfg).detect(
             val_loss_recorder.val_losses
         )
         phase_boundary = boundary_result['boundary_epoch']
         if phase_boundary is not None:
-            print(f"  [PhaseDetector] T+ = {phase_boundary} "
-                  f"(best_val_loss={boundary_result['best_val_loss']:.6f}, "
-                  f"final_val_loss={boundary_result['final_val_loss']:.6f})")
+            print(f"  [PhaseDetector] T+ = {phase_boundary}  (cfg for {MODEL}: "
+                  f"burn_in={boundary_cfg['burn_in_epochs']}, "
+                  f"patience={boundary_cfg['patience']}, "
+                  f"min_delta_frac={boundary_cfg['min_delta_frac']})")
+            print(f"  [PhaseDetector] best_val_loss={boundary_result['best_val_loss']:.6f}, "
+                  f"final_val_loss={boundary_result['final_val_loss']:.6f}")
         else:
             print("  [PhaseDetector] No plateau found — phase_aware_mtt runs as "
                   "parameter matching throughout (same as standard MTT).")
@@ -451,6 +465,12 @@ def main():
             'initializer':        INITIALIZER,
             'matching':           'phase_aware_mtt' if USE_PHASE_AWARE_MATCHING else 'param_mtt',
             'phase_boundary':     phase_boundary if phase_boundary is not None else '',
+            # The detector config is per-architecture, so record the knobs that
+            # produced this T+ — otherwise rows from different models are not
+            # comparable.
+            'phase_burn_in':      boundary_cfg['burn_in_epochs']  if boundary_cfg else '',
+            'phase_patience':     boundary_cfg['patience']        if boundary_cfg else '',
+            'phase_min_delta':    boundary_cfg['min_delta_frac']  if boundary_cfg else '',
             'postfix_alpha':      POSTFIX_ALPHA,
             'seed':               SEED,
             'expert_epochs':      cfg['expert_epochs'],
