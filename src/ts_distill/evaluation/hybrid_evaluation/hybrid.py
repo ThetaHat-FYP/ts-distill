@@ -95,18 +95,46 @@ class BaseHybridEvaluator(BaseEvaluator):
         expert_losses=None,
     ):
         """
-        Creates a hybrid dataset by mixing:
-        - synthetic windows
-        - sampled real windows
- 
-        real_ratio determines percentage of real data in mixture.
- 
-        Example:
-            real_ratio = 0.3
-            -> 30% real windows
-            -> 70% synthetic windows
+        Build a hybrid training set: every synthetic window, plus real windows
+        drawn from the training corpus.
+
+        What real_ratio actually controls
+        ---------------------------------
+        `real_ratio` is a fraction of the FULL real corpus, not the composition
+        of the returned dataset:
+
+            n_real  = int(total_real_windows * real_ratio)
+            n_synth = ALL windows of synthetic_data   (never subsampled)
+
+        Because the real corpus is typically far larger than the short distilled
+        sequence, the result is much more real-heavy than `real_ratio` suggests.
+
+        Example (ETTm2: 34369 real windows, a 384-step synthetic -> 193 windows):
+
+            real_ratio = 0.2
+            -> n_real  = 6873
+            -> n_synth = 193
+            -> 7066 windows total, which is 97.3% real BY COUNT
+
+        So do not report `real_ratio` as the mixture composition. Derive the
+        actual split from the returned length:
+
+            n_synth = len(make_windows(synthetic_data, window_size))
+            n_real  = len(dataset) - n_synth
+
+        Args:
+            synthetic_data (Tensor):  Distilled sequence, shape (M, C).
+            real_train_data (Tensor): Un-windowed real training data, shape (T, C).
+            real_ratio (float):       Fraction of the real corpus to draw, [0, 1].
+                                      0.0 -> pure synthetic; 1.0 -> pure real.
+            window_size (int):        seq_len + pred_len.
+            expert_losses:            Optional per-window losses, forwarded to the
+                                      anchor selector for importance weighting.
+
+        Returns:
+            TensorDataset: Shuffled hybrid windows.
         """
- 
+
         real_window_candidates = torch.tensor(
             make_windows(real_train_data.cpu().numpy(), window_size),
             dtype=torch.float32,

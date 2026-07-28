@@ -491,8 +491,16 @@ def main():
     # experiment_inti protocol (raw distilled, seed(1) probe) — do NOT overwrite
     # it with the hybrid mixer's hybrid_0 point.
 
-    print(f"  Final training set: {len(final_dataset)} windows "
-          f"({best_ratio_pct}% real + {100 - best_ratio_pct}% synthetic)")
+    # Report the ACTUAL composition, not the ratio knob. Every synthetic window
+    # is always kept; the ratio scales how many real windows are drawn from the
+    # full corpus on top of them. The resulting mix is therefore far more
+    # real-heavy than the knob value suggests.
+    n_syn_final  = len(make_windows(synthetic_final.detach().cpu().numpy(), window_size))
+    n_real_final = len(final_dataset) - n_syn_final
+    print(f"  Final training set: {len(final_dataset)} windows = "
+          f"{n_real_final} real + {n_syn_final} synthetic "
+          f"({n_real_final / len(final_dataset) * 100:.1f}% real by count; "
+          f"ratio knob r={best_ratio_pct}%)")
 
     # ── SUMMARY ──────────────────────────────────────────────────────────────
     banner("SUMMARY")
@@ -504,7 +512,9 @@ def main():
     print(f"  Measured  r* (oracle sweep)   : {best['r_star']:.1f}% -> {best_ratio_pct}% real")
     print(f"  Prediction gap                : {abs(predicted_r_star - best['r_star']):.1f} pp")
     print(f"  FINAL hybrid    MSE           : {final_mse:.6f}")
-    print(f"  Final synthetic+real dataset  : {len(final_dataset)} windows ready for use")
+    print(f"  Final synthetic+real dataset  : {len(final_dataset)} windows = "
+          f"{n_real_final} real + {n_syn_final} synthetic "
+          f"({n_real_final / len(final_dataset) * 100:.1f}% real by count)")
     print()
 
     # ── LOG: append one row to the results CSV ───────────────────────────────

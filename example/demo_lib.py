@@ -414,8 +414,18 @@ def main() -> None:
         real_ratio      = predicted_pct / 100.0,
         window_size     = window_size,
     )
-    print(f"  final dataset: {len(final_set)} windows "
-          f"({predicted_pct}% real + {100 - predicted_pct}% synthetic)")
+
+    # Report the ACTUAL composition, not the ratio knob. Every synthetic window
+    # is always kept; the ratio scales how many real windows are drawn from the
+    # full corpus on top of them. So the resulting mix is far more real-heavy
+    # than the knob value suggests, and printing the knob as if it were the
+    # composition would be misleading.
+    n_syn_final  = len(make_windows(fixed.detach().cpu().numpy(), window_size))
+    n_real_final = len(final_set) - n_syn_final
+    print(f"  final dataset: {len(final_set)} windows = "
+          f"{n_real_final} real + {n_syn_final} synthetic "
+          f"({n_real_final / len(final_set) * 100:.1f}% real by count; "
+          f"ratio knob r={predicted_pct}%)")
 
     # ── 9. OPTIONAL: verify the prediction against a measured sweep ──────────
     # This is the expensive ground truth the predictor exists to avoid — one
@@ -473,8 +483,9 @@ def main() -> None:
         print(f"  measured  r*           : {measured_pct}% real   "
               f"(oracle, {len(MIXING_RATIOS)} probe trainings)")
         print(f"  hybrid MSE @ measured  : {measured_mse:.6f}")
-    print(f"  final dataset          : {len(final_set)} windows "
-          f"({predicted_pct}% real + {100 - predicted_pct}% synthetic)")
+    print(f"  final dataset          : {len(final_set)} windows = "
+          f"{n_real_final} real + {n_syn_final} synthetic "
+          f"({n_real_final / len(final_set) * 100:.1f}% real by count)")
     print()
 
 
