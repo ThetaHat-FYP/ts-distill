@@ -12,6 +12,7 @@ Writes to example/results/:
 Run:  python example/demo_lib.py     (edit SETTINGS below)
 """
 
+import random
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -43,14 +44,14 @@ from ts_distill.evaluation.hybrid_evaluation.ratio_predictor import predict_r_st
 # ── SETTINGS ─────────────────────────────────────────────────────────────────
 
 DATA_DIR    = Path(__file__).resolve().parent   # folder holding the benchmark CSVs
-DATASET     = 'ETTh2'                            # any key in DATASET_CONFIGS
+DATASET     = 'ETTh1'                            # any key in DATASET_CONFIGS
 MODEL       = 'DLinear'                          # MLP | DLinear | CNN | LSTM
-INITIALIZER = 'geometry'                           # random | geometry | uncertainty
-ALPHA       = 0.9                                # post-fix strength, 0 disables
+INITIALIZER = 'random'                           # random | geometry | uncertainty
+ALPHA       = 0                                # post-fix strength, 0 disables
 SEED        = 42                                 # fixes every random draw below
 
 # Phase-aware: off = match weights throughout; on = match outputs after T+.
-USE_PHASE_AWARE          = True
+USE_PHASE_AWARE          = False
 PHASE_BOUNDARY_OVERRIDES = {}      # tweak one detector knob, e.g. {'burn_in_epochs': 10}
 
 # Validation: the sweep measures the true best ratio, to check the prediction.
@@ -143,7 +144,12 @@ def main():
 
     cfg    = {**DEFAULT_CONFIG, **OVERRIDES}     # library defaults + our overrides
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    torch.manual_seed(SEED)                      # everything below is reproducible
+    # Seed all three generators. torch alone is NOT enough: the expert recorder
+    # picks checkpoint pairs with Python's `random`, so leaving it unseeded makes
+    # the distilled block differ on every run even at a fixed SEED.
+    torch.manual_seed(SEED)
+    random.seed(SEED)
+    np.random.seed(SEED)
     print(f"  device={device}  dataset={DATASET}  model={MODEL}  "
           f"init={INITIALIZER}  alpha={ALPHA}  seed={SEED}")
 

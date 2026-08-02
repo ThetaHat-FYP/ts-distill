@@ -21,6 +21,7 @@ Edit the SWITCHES block below to change dataset, model, initializer, or
 post-fix strength.
 """
 
+import random
 import sys
 from pathlib import Path
 
@@ -194,7 +195,12 @@ def append_result_csv(csv_path, row: dict, key_cols: list):
 
 
 def main():
+    # Seed all three generators. torch alone is NOT enough: the expert recorder
+    # picks checkpoint pairs with Python's `random`, so leaving it unseeded makes
+    # the distilled block differ on every run even at a fixed SEED.
     torch.manual_seed(SEED)
+    random.seed(SEED)
+    np.random.seed(SEED)
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     dataset_cfg = DATASET_CONFIGS[DATASET]
